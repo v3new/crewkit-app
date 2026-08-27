@@ -56,6 +56,11 @@ jobs:
                 "darwin-aarch64": { signature: $signature, url: $tarball }
               }
             }' > latest.json
+      - name: Stable-named dmg copy
+        # The landing's download button uses the permalink
+        # …/releases/latest/download/CrewKit_aarch64.dmg, which only works
+        # for an asset whose name never changes between releases.
+        run: cp target/release/bundle/dmg/CrewKit_*_aarch64.dmg CrewKit_aarch64.dmg
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -63,4 +68,5 @@ jobs:
             target/release/bundle/macos/CrewKit.app.tar.gz
             target/release/bundle/macos/CrewKit.app.tar.gz.sig
             target/release/bundle/dmg/CrewKit_*_aarch64.dmg
+            CrewKit_aarch64.dmg
             latest.json
