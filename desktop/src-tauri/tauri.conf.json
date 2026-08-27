@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CrewKit",
+  "version": "1.0.0",
+  "identifier": "cloud.mindbox.crewkit",
+  "build": {
+    "beforeDevCommand": "cargo build --release -p crewkit-bridge && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "cargo build --release -p crewkit-bridge && npm run build",
+    "frontendDist": "../dist"
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["crewkit"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDczQkQ3NDQzMzlDRjA0MEUKUldRT0JNODVRM1M5YzgzR3NnK3E2WXhpTEUrYmNwdk13M0RrTVoraXNadHJDbjhmS1MxenFaR1cK",
+      "endpoints": [
+        "https://github.com/v3new/crewkit-app/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CrewKit",
+        "width": 800,
+        "height": 780,
+        "minWidth": 560,
+        "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "resources": {
+      "../../target/release/crewkit-bridge": "bin/crewkit-bridge"
+    }
+  }
+}

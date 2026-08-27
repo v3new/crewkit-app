@@ -1,0 +1,7 @@
+{
+  "id": "chatgpt-desktop",
+  "name": "ChatGPT Desktop",
+  "appPaths": ["/Applications/ChatGPT.app"],
+  "restartRequired": true,
+  "notes": "Shares ~/.codex configuration with the Codex CLI; restart to pick up config changes."
+}

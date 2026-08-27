@@ -1,0 +1,33 @@
+{
+  "required": ["name", "description"],
+  "hosts": {
+    "claude": {
+      "knownKeys": [
+        "name",
+        "description",
+        "argument-hint",
+        "author",
+        "license",
+        "version",
+        "metadata",
+        "aliases",
+        "allowed-tools",
+        "model",
+        "disable-model-invocation",
+        "user-invocable"
+      ]
+    },
+    "codex": {
+      "knownKeys": [
+        "name",
+        "description",
+        "author",
+        "license",
+        "version",
+        "metadata",
+        "aliases",
+        "argument-hint"
+      ]
+    }
+  }
+}

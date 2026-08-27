@@ -1,0 +1,942 @@
+:root {
+  --bg: #f1efe7;
+  --bg-toolbar: #eae7db;
+  --card: #ffffff;
+  --text: #1e1d17;
+  --muted: #676453;
+  --faint: #8e8b77;
+  --hairline: #d6d3c2;
+  --hairline-soft: #e5e2d3;
+  --accent: #1e6b4f;
+  --accent-deep: #14523b;
+  --accent-soft: #e3efe7;
+  --accent-line: #a9cdba;
+  --warn: #8a5e06;
+  --warn-soft: #f6eeda;
+  --warn-line: #e3d2a6;
+  --fail: #b3352c;
+  --fail-soft: #f9ebe9;
+  --fail-line: #e7c0bb;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Interactive things must read as interactive: pointer + (for text
+   actions) an underline. */
+button:not(:disabled),
+select,
+summary,
+a,
+input[type="checkbox"] {
+  cursor: pointer;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100vh;
+  display: grid;
+  /* 33px toolbar centers its content on the default traffic-light
+     line (~16.5px from the top) with no extra inset. */
+  grid-template-rows: 33px 1fr auto;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* --- Toolbar (window drag region; traffic lights sit on the left) --- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 84px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.wordmark {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  pointer-events: none;
+}
+
+.tb-spacer {
+  flex: 1;
+  height: 100%;
+}
+
+.tb-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 0.5px 1px rgba(30, 29, 23, 0.08);
+}
+
+.tb-btn:hover:not(:disabled) {
+  border-color: var(--faint);
+}
+
+.tb-btn:active:not(:disabled) {
+  background: var(--hairline-soft);
+}
+
+.tb-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.tb-btn.primary:hover:not(:disabled) {
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+}
+
+.tb-btn.primary:active:not(:disabled) {
+  background: #114531;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+/* --- Footer status (detected apps + global summary) --- */
+
+.foot-status {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.foot-summary {
+  color: var(--muted);
+}
+
+.status-ok {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.client-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dot--on {
+  background: var(--accent);
+}
+
+.dot--off {
+  background: var(--faint);
+}
+
+.client-inline b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* --- Scrollable content --- */
+
+main {
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+.banner {
+  margin: 12px 16px 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.banner a {
+  color: var(--warn);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  margin-left: 6px;
+}
+
+.banner-btn {
+  color: var(--warn);
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 6px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.banner-btn:disabled {
+  opacity: 0.6;
+}
+
+/* --- Kit card (grouped-list card, System Settings style) --- */
+
+.kit {
+  margin: 12px 16px 0;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(30, 29, 23, 0.06);
+}
+
+.kit-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 12px 16px 10px;
+}
+
+.kit-name-big {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.kit-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.kit-head .spacer {
+  flex: 1;
+}
+
+.sel {
+  font-size: 11px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sel select {
+  font: inherit;
+  font-size: 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--text);
+  padding: 1px 3px;
+}
+
+.telemetry {
+  margin: 0 16px 6px;
+  font-size: 11px;
+  color: var(--warn);
+}
+
+.telemetry a {
+  color: var(--warn);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 16px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--hairline);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner--chip {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-width: 1.5px;
+  vertical-align: -1px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Item rows --- */
+
+.grid-head,
+.row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 100px 100px;
+  gap: 10px;
+  align-items: center;
+  padding: 0 16px;
+}
+
+.grid-head {
+  padding-top: 4px;
+  padding-bottom: 5px;
+  border-top: 1px solid var(--hairline-soft);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.group-label {
+  padding: 7px 16px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(30, 29, 23, 0.025);
+  border-bottom: 1px solid var(--hairline-soft);
+}
+
+.row {
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row:hover {
+  background: rgba(30, 29, 23, 0.035);
+}
+
+.item-name {
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.meta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--faint);
+}
+
+.item-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.row .hover-action {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.row:hover .hover-action,
+.row .hover-action:focus-visible {
+  opacity: 1;
+}
+
+/* --- Selection checkboxes --- */
+
+.sel-cell {
+  display: flex;
+  align-items: center;
+}
+
+.sel-cell input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* Row checkboxes reveal on hover; stay visible once anything is
+   selected (edit-mode feel) or when checked. */
+.row .sel-cell input {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.row:hover .sel-cell input,
+.row .sel-cell input:checked,
+main.selecting .row .sel-cell input {
+  opacity: 1;
+}
+
+.grid-head .sel-cell input {
+  opacity: 0.65;
+}
+
+.grid-head .sel-cell input:hover,
+.grid-head .sel-cell input:checked,
+main.selecting .grid-head .sel-cell input {
+  opacity: 1;
+}
+
+/* --- Column headers (pull-down menus per app) --- */
+
+.col-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.col-head {
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 1px 0;
+}
+
+.col-head:hover,
+.col-head--open {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--faint);
+}
+
+.caret {
+  font-size: 8px;
+  margin-left: 3px;
+  color: var(--faint);
+}
+
+.col-head:hover .caret,
+.col-head--open .caret {
+  color: var(--text);
+}
+
+.col-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 30;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(30, 29, 23, 0.18);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.menu-item--danger:hover {
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+/* --- Chips & inline actions --- */
+
+.chip {
+  display: inline-block;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.chip--ok {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-deep);
+}
+
+button.chip--ok:hover {
+  border-color: var(--accent);
+}
+
+.chip--warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+.chip--off {
+  background: var(--hairline-soft);
+  border-color: var(--hairline);
+  color: var(--muted);
+}
+
+.chip--install {
+  background: #fff;
+  border-color: var(--accent-line);
+  border-style: dashed;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.chip--install:hover {
+  background: var(--accent-soft);
+  border-style: solid;
+}
+
+.chip--danger {
+  background: var(--fail-soft);
+  border-color: var(--fail-line);
+  color: var(--fail);
+  font-weight: 500;
+}
+
+.chip--busy {
+  background: var(--hairline-soft);
+  border-color: var(--hairline);
+  color: var(--muted);
+  min-width: 34px;
+  text-align: center;
+}
+
+.na {
+  color: var(--faint);
+}
+
+.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--hairline);
+}
+
+.link:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration-color: var(--faint);
+}
+
+.link:active:not(:disabled) {
+  opacity: 0.6;
+}
+
+.link.authorize {
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration-color: var(--accent-line);
+}
+
+.link.authorize:hover:not(:disabled) {
+  color: var(--accent-deep);
+}
+
+.link.remove:hover:not(:disabled) {
+  color: var(--fail);
+  text-decoration-color: var(--fail-line);
+}
+
+.link.remove.confirm,
+.link.remove-kit.confirm {
+  color: var(--fail);
+  font-weight: 500;
+  text-decoration-color: var(--fail-line);
+}
+
+.muted-action {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.kit-foot {
+  padding: 8px 16px;
+}
+
+/* --- Batch-selection action bar --- */
+
+.selbar {
+  position: sticky;
+  bottom: 10px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 16px 0;
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(30, 29, 23, 0.18);
+  font-size: 12px;
+}
+
+.selbar .spacer {
+  flex: 1;
+}
+
+.selbar-count {
+  font-weight: 600;
+}
+
+.selbar-label {
+  color: var(--muted);
+}
+
+/* --- Add kit --- */
+
+.add-kit-toggle {
+  display: block;
+  margin: 12px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--hairline);
+}
+
+.add-kit-toggle:hover {
+  color: var(--text);
+  text-decoration-color: var(--faint);
+}
+
+.add-kit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 12px 16px;
+}
+
+.add-kit input {
+  flex: 1;
+  min-width: 220px;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.add-kit input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.add-kit-error {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--fail);
+}
+
+/* --- Tooltips --- */
+
+.tip {
+  position: relative;
+  display: inline-block;
+}
+
+.tip .tipbox {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  max-width: 340px;
+  background: #2b2a24;
+  color: #f2f0e8;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  padding: 8px 11px;
+  border-radius: 7px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.tip:hover .tipbox {
+  display: block;
+}
+
+/* Footer tooltips open upward so they never clip at the window edge. */
+.tip--up .tipbox {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.tip-sub {
+  color: #a3a091;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+.tip-action {
+  color: #9fd3b9;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+/* --- Footer --- */
+
+footer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-toolbar);
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 30px;
+}
+
+.log {
+  flex: 1;
+}
+
+/* A real log (a <details> with steps) keeps its toggle intact and
+   lets the latest-entry preview absorb the shrinking; when the row
+   gets too tight it wraps onto its own footer line instead. */
+details.log {
+  flex: 1 1 auto;
+  min-width: min(100%, 240px);
+}
+
+.log summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: none;
+  color: var(--muted);
+}
+
+.log-toggle {
+  flex: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--hairline);
+}
+
+.log summary:hover .log-toggle {
+  color: var(--text);
+}
+
+.log summary::-webkit-details-marker {
+  display: none;
+}
+
+.log[open] .log-toggle {
+  color: var(--text);
+}
+
+.log-latest {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.log[open] .log-latest {
+  visibility: hidden;
+}
+
+/* The step log opens as a drawer panel above the footer, so the
+   footer itself always stays one line tall. */
+.log-rows {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(30, 29, 23, 0.2);
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 40px 96px 1fr 1.1fr;
+  gap: 8px;
+  padding: 2px 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+}
+
+.log-row--ok .log-status {
+  color: var(--accent);
+}
+
+.log-row--skipped .log-status {
+  color: var(--faint);
+}
+
+.log-row--failed .log-status {
+  color: var(--fail);
+}
+
+.log-client,
+.log-message {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.foot-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.sel-lang {
+  font: inherit;
+  font-size: 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--muted);
+  padding: 1px 3px;
+}
+
+.version {
+  color: var(--faint);
+}
+
+/* --- States --- */
+
+.fatal {
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-line);
+  color: var(--fail);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 40px 16px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.loading {
+  color: var(--muted);
+  text-align: center;
+  margin-top: 120px;
+  font-size: 12px;
+}
+
+.kit-error {
+  margin: 0 16px 12px;
+  padding: 7px 12px;
+  border-radius: 7px;
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-line);
+  color: var(--fail);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.empty {
+  text-align: center;
+  margin: 90px 24px 24px;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.empty-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}

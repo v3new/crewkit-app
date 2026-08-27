@@ -1,0 +1,20 @@
+[package]
+name = "crewkit-bridge"
+description = "Local stdio bridge to remote MCP servers with Crewkit-level OAuth: authorize once, every AI client on the machine shares the session."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "crewkit-bridge"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+crewkit-core = { path = "../crewkit-core" }

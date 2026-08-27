@@ -1,0 +1,12 @@
+# Rust
+/target/
+
+# Frontend
+node_modules/
+desktop/dist/
+
+# Tauri generated schemas
+desktop/src-tauri/gen/schemas/
+
+# macOS
+.DS_Store

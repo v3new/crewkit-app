@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crewkit-core",
+    "crates/crewkit-bridge",
+    "crates/crewkit-cli",
+    "desktop/src-tauri",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/v3new/crewkit-app"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.23"
+thiserror = "2"

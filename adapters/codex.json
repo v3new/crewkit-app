@@ -1,0 +1,13 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "cli": {
+    "pathNames": ["codex"],
+    "bundledGlobs": ["/Applications/ChatGPT.app/Contents/Resources/codex"]
+  },
+  "files": {
+    "config": "${codexHome}/config.toml"
+  },
+  "restartRequired": false,
+  "notes": "The Codex CLI ships inside ChatGPT.app, so CrewKit can drive it even when no codex binary is on PATH. Configuration is shared between Codex CLI, the ChatGPT Desktop Codex surface, and the IDE extension."
+}

@@ -1,0 +1,17 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "cli": {
+    "pathNames": ["claude"],
+    "bundledGlobs": [
+      "${appSupport}/Claude/claude-code/*/claude.app/Contents/MacOS/claude"
+    ]
+  },
+  "files": {
+    "settings": "${claudeConfigDir}/settings.json",
+    "userConfig": "${claudeConfigDir}/.claude.json",
+    "installedPlugins": "${claudeConfigDir}/plugins/installed_plugins.json"
+  },
+  "restartRequired": false,
+  "notes": "Plugins and MCP servers installed at user scope are also picked up by Claude Cowork local sessions, which read the same user settings."
+}
