@@ -33,5 +33,9 @@ jobs:
       - name: Frontend
         working-directory: desktop
         run: npm ci && npm run build
+      # The desktop crate's build script verifies the bundled bridge
+      # resource exists, so build it before checking the crate.
+      - name: Bridge binary
+        run: cargo build --release -p crewkit-bridge
       - name: Desktop crate
         run: cargo check -p crewkit-desktop
