@@ -1,9 +1,9 @@
 name: Release
 
-# Tagging vX.Y.Z builds the app, signs the updater artifact with the
-# key from repo secrets, and publishes a GitHub release with latest.json.
-# The app's updater endpoint points at the latest release's latest.json,
-# so publishing the release IS shipping the update.
+# Tagging vX.Y.Z builds the app for macOS and Windows, signs the updater
+# artifacts with the key from repo secrets, and publishes a GitHub release
+# with latest.json. The app's updater endpoint points at the latest
+# release's latest.json, so publishing the release IS shipping the update.
 #
 # Required repo secret:
 #   TAURI_SIGNING_PRIVATE_KEY — contents of ~/.tauri/crewkit-updater.key
@@ -13,10 +13,8 @@ on:
     tags: ["v*"]
 
 jobs:
-  release:
+  build-macos:
     runs-on: macos-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,40 +31,97 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npx tauri build
+      - name: Collect artifacts
+        run: |
+          mkdir upload
+          cp target/release/bundle/macos/CrewKit.app.tar.gz upload/
+          cp target/release/bundle/macos/CrewKit.app.tar.gz.sig upload/
+          cp target/release/bundle/dmg/CrewKit_*_aarch64.dmg upload/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-macos
+          if-no-files-found: error
+          path: upload/*
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Frontend dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Build and sign
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npx tauri build
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir upload
+          cp target/release/bundle/nsis/CrewKit_*_x64-setup.exe upload/
+          cp target/release/bundle/nsis/CrewKit_*_x64-setup.exe.sig upload/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-windows
+          if-no-files-found: error
+          path: upload/*
+
+  publish:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Compose latest.json
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BUNDLE="target/release/bundle"
-          TARBALL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/CrewKit.app.tar.gz"
-          DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/CrewKit_${VERSION}_aarch64.dmg"
-          SIGNATURE="$(cat "$BUNDLE"/macos/CrewKit.app.tar.gz.sig)"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          MAC_SIG="$(cat dist/CrewKit.app.tar.gz.sig)"
+          WIN_SIG="$(cat "dist/CrewKit_${VERSION}_x64-setup.exe.sig")"
           # Top-level "url" doubles as a plain download link for the
           # landing page; the updater reads "platforms".
           jq -n \
             --arg version "$VERSION" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg url "$DMG_URL" \
-            --arg tarball "$TARBALL_URL" \
-            --arg signature "$SIGNATURE" \
+            --arg url "$BASE/CrewKit_${VERSION}_aarch64.dmg" \
+            --arg mac_url "$BASE/CrewKit.app.tar.gz" \
+            --arg mac_sig "$MAC_SIG" \
+            --arg win_url "$BASE/CrewKit_${VERSION}_x64-setup.exe" \
+            --arg win_sig "$WIN_SIG" \
             '{
               version: $version,
               pub_date: $pub_date,
               url: $url,
               platforms: {
-                "darwin-aarch64": { signature: $signature, url: $tarball }
+                "darwin-aarch64": { signature: $mac_sig, url: $mac_url },
+                "windows-x86_64": { signature: $win_sig, url: $win_url }
               }
             }' > latest.json
-      - name: Stable-named dmg copy
-        # The landing's download button uses the permalink
-        # …/releases/latest/download/CrewKit_aarch64.dmg, which only works
-        # for an asset whose name never changes between releases.
-        run: cp target/release/bundle/dmg/CrewKit_*_aarch64.dmg CrewKit_aarch64.dmg
+      - name: Stable-named installer copies
+        # The landing's download buttons use the permalinks
+        # …/releases/latest/download/CrewKit_aarch64.dmg and
+        # …/CrewKit_x64-setup.exe, which only work for assets whose
+        # names never change between releases.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp "dist/CrewKit_${VERSION}_aarch64.dmg" CrewKit_aarch64.dmg
+          cp "dist/CrewKit_${VERSION}_x64-setup.exe" CrewKit_x64-setup.exe
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/release/bundle/macos/CrewKit.app.tar.gz
-            target/release/bundle/macos/CrewKit.app.tar.gz.sig
-            target/release/bundle/dmg/CrewKit_*_aarch64.dmg
+            dist/*
             CrewKit_aarch64.dmg
+            CrewKit_x64-setup.exe
             latest.json

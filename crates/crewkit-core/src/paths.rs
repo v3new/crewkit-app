@@ -18,6 +18,9 @@ impl Paths {
     /// Resolve from the current environment, honoring the same overrides
     /// the client CLIs honor (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
     pub fn from_env() -> Self {
+        #[cfg(windows)]
+        let home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
+        #[cfg(not(windows))]
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
@@ -25,6 +28,13 @@ impl Paths {
         let codex_home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"));
+        // The per-user app data root: where Claude Desktop keeps its config
+        // and where CrewKit's own directory lives.
+        #[cfg(windows)]
+        let app_support = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Roaming"));
+        #[cfg(not(windows))]
         let app_support = home.join("Library/Application Support");
         Self {
             home,

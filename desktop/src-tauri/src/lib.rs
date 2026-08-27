@@ -669,6 +669,7 @@ pub fn run() {
                     }
                 }
                 // Clicking the Dock icon brings the window back.
+                #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => show_main_window(app),
                 _ => {}
             }

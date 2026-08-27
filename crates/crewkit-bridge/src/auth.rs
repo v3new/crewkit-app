@@ -687,12 +687,24 @@ impl FileLock {
     }
 }
 
+#[cfg(not(windows))]
 fn process_alive(pid: u32) -> bool {
     std::process::Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    // tasklist prints a table row for a live pid and an info message
+    // otherwise; matching the pid in the output separates the two.
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
         .unwrap_or(false)
 }
 
@@ -780,10 +792,15 @@ fn urldecode(input: &str) -> String {
 
 fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
-    let program = "/usr/bin/open";
-    #[cfg(not(target_os = "macos"))]
-    let program = "xdg-open";
+    let (program, args): (&str, &[&str]) = ("/usr/bin/open", &[]);
+    // rundll32 hands the URL to the default browser without going through
+    // cmd.exe, whose argument parsing mangles `&` in query strings.
+    #[cfg(windows)]
+    let (program, args): (&str, &[&str]) = ("rundll32", &["url.dll,FileProtocolHandler"]);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let (program, args): (&str, &[&str]) = ("xdg-open", &[]);
     if std::process::Command::new(program)
+        .args(args)
         .arg(url)
         .spawn()
         .is_err()

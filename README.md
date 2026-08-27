@@ -4,7 +4,7 @@
 
 A publisher describes a set once — a signed *kit* manifest on any static hosting. The user clicks **Install kit** — and the plugins and MCP servers land in Claude Code, Claude Cowork, Claude Desktop, Codex and ChatGPT Desktop, correctly registered through each client's own mechanisms. The user is *not* a developer: zero terminal, zero manual config editing.
 
-> **Status: 1.0 on macOS.** Signed kit manifests by URL, release channels, `crewkit://` deep links, menu-bar tray with background updates, Keychain-stored OAuth sessions, role bundles, disclosed per-kit telemetry, EN/RU/ES/ZH UI, rollback. The app starts clean — users add publisher kits by URL or deep link. Windows and MDM are the remaining roadmap items. See the [roadmap](#roadmap).
+> **Status: 1.0 on macOS.** Signed kit manifests by URL, release channels, `crewkit://` deep links, menu-bar tray with background updates, Keychain-stored OAuth sessions, role bundles, disclosed per-kit telemetry, EN/RU/ES/ZH UI, rollback. The app starts clean — users add publisher kits by URL or deep link. A Windows build (x64 NSIS installer) ships from the same release pipeline — newer and less battle-tested than macOS. MDM is the remaining roadmap item. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -139,7 +139,10 @@ sessions; if that happens, wrap the built `CrewKit.app` yourself:
   every 2 hours), disclosed per-kit telemetry, EN/RU/ES/ZH UI, snapshots +
   `crewkit rollback`, Keychain sessions, role bundles. Open source: Apache-2.0 code,
   [CC-BY manifest spec](docs/kit-spec.md).
-- **Next:** Windows build, MDM policies.
+- **Windows (new):** x64 NSIS installer + signed self-updates from the same release.
+  Sessions use the file fallback (no Keychain on Windows); installer code signing and
+  Credential Manager storage are still ahead.
+- **Next:** MDM policies.
 
 ## License
 

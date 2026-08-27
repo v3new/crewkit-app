@@ -109,15 +109,25 @@ pub fn rollback_latest(crewkit_dir: &Path) -> Result<Vec<PathBuf>> {
 /// Extract a zip archive using the platform's native tool.
 pub fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest).map_err(io_ctx(format!("creating {}", dest.display())))?;
+    let mut command;
     #[cfg(target_os = "macos")]
-    let (program, args) = ("/usr/bin/ditto", vec!["-x", "-k"]);
-    #[cfg(not(target_os = "macos"))]
-    let (program, args) = ("unzip", vec!["-o", "-q"]);
-
-    let output = std::process::Command::new(program)
-        .args(&args)
-        .arg(zip)
-        .arg(dest)
+    {
+        command = std::process::Command::new("/usr/bin/ditto");
+        command.args(["-x", "-k"]).arg(zip).arg(dest);
+    }
+    #[cfg(windows)]
+    {
+        // System bsdtar (ships with Windows 10+) extracts zip archives.
+        command = std::process::Command::new("tar");
+        command.arg("-xf").arg(zip).arg("-C").arg(dest);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        command = std::process::Command::new("unzip");
+        command.args(["-o", "-q"]).arg(zip).arg("-d").arg(dest);
+    }
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = command
         .output()
         .map_err(io_ctx(format!("running {program}")))?;
     if !output.status.success() {

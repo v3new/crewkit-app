@@ -15,6 +15,9 @@ use crate::error::{io_ctx, Result};
 use crate::fsops;
 use crate::kit::Kit;
 
+#[cfg(windows)]
+pub const BRIDGE_BIN_NAME: &str = "crewkit-bridge.exe";
+#[cfg(not(windows))]
 pub const BRIDGE_BIN_NAME: &str = "crewkit-bridge";
 
 /// Stable installed location: `<crewkit dir>/bin/crewkit-bridge`.

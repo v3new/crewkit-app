@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "../../target/release/crewkit-bridge.exe": "bin/crewkit-bridge.exe"
+    }
+  }
+}

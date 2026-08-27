@@ -123,9 +123,9 @@ fn build_engine(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<Engine,
     let paths = Paths::from_env();
     let installed_bridge = crewkit_core::bridge::bridge_path(&paths.crewkit_dir());
     let bridge_source = [
-        assets.join("bin/crewkit-bridge"),
+        assets.join("bin").join(bridge::BRIDGE_BIN_NAME),
         installed_bridge.clone(),
-        assets.join("target/release/crewkit-bridge"),
+        assets.join("target/release").join(bridge::BRIDGE_BIN_NAME),
     ]
     .into_iter()
     .find(|p| p.exists())
