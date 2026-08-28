@@ -271,8 +271,7 @@ fn json_mcp_merge_is_idempotent_and_adopts_kit_entries() {
         serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
     assert_eq!(value["preferences"]["theme"], "dark");
     assert_eq!(
-        value["mcpServers"]["mine"]["command"],
-        "/fake/CrewKit/bin/crewkit-bridge",
+        value["mcpServers"]["mine"]["command"], "/fake/CrewKit/bin/crewkit-bridge",
         "adopted entry now launches the bridge"
     );
     assert_eq!(
@@ -311,7 +310,10 @@ fn json_url_duplicates_are_adopted() {
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
     assert!(value["mcpServers"].get("my-kit-server").is_none());
-    assert!(value["mcpServers"].get("other").is_some(), "unrelated stays");
+    assert!(
+        value["mcpServers"].get("other").is_some(),
+        "unrelated stays"
+    );
 }
 
 #[test]

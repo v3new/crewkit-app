@@ -248,7 +248,9 @@ pub fn inventory(
 
     // --- Claude Code MCP servers: user scope in .claude.json ---
     let claude_user_config = fsops::read_json(&paths.claude_config_dir.join(".claude.json"))?;
-    let claude_servers = claude_user_config.as_ref().and_then(|c| c.get("mcpServers"));
+    let claude_servers = claude_user_config
+        .as_ref()
+        .and_then(|c| c.get("mcpServers"));
     for server in kit.active_mcp_servers() {
         let default_detail = "crewkit-bridge (stdio) at user scope in .claude.json".to_string();
         let (status, detail) = if !present("claude-code") {
