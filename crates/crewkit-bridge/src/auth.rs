@@ -76,8 +76,8 @@ impl AuthSession {
         self.load_tokens().is_some()
     }
 
-    // Tokens live in the macOS Keychain (file fallback elsewhere); see
-    // crewkit_core::bridge::session.
+    // Tokens live in the platform credential store (macOS Keychain /
+    // Windows Credential Manager); see crewkit_core::bridge::session.
     fn load_tokens(&self) -> Option<Tokens> {
         let text = crewkit_core::bridge::session::load(&self.crewkit_dir, &self.server_id)?;
         serde_json::from_str(&text).ok()

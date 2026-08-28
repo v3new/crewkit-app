@@ -104,20 +104,21 @@ pub fn auth_status(kit: &Kit, crewkit_dir: &Path) -> Vec<AuthState> {
         .collect()
 }
 
-/// MCP session storage: macOS Keychain first (service "CrewKit MCP",
-/// account = server id, via the `security` CLI), with the pre-Keychain
-/// 0600 file as fallback and one-way migration source. Shared by the
-/// engine (status/removal) and the crewkit-bridge binary (login/serve).
+/// MCP session storage: the platform credential store — macOS Keychain
+/// (service "CrewKit MCP", account = server id, via the `security` CLI)
+/// or the Windows Credential Manager. A store failure is surfaced to the
+/// caller, never silently downgraded to a plain file; only platforms
+/// without a native store (Linux dev builds) keep the 0600 token file.
+/// Shared by the engine (status/removal) and the crewkit-bridge binary
+/// (login/serve).
 pub mod session {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    // Only the macOS Keychain and Windows Credential Manager paths
-    // reference this; other platforms use the file fallback and would
-    // flag it as dead code.
     #[cfg(any(target_os = "macos", windows))]
     const SERVICE: &str = "CrewKit MCP";
 
-    fn legacy_path(crewkit_dir: &Path, server_id: &str) -> PathBuf {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn token_path(crewkit_dir: &Path, server_id: &str) -> std::path::PathBuf {
         crewkit_dir.join("auth").join(format!("{server_id}.json"))
     }
 
@@ -175,8 +176,9 @@ pub mod session {
     /// Windows Credential Manager, generic credentials via wincred.
     /// Target name is `CrewKit MCP/<server id>`, so entries are legible
     /// in the system Credential Manager UI. The OS caps a generic blob
-    /// at 2560 bytes; an oversized save fails and the caller falls back
-    /// to the token file, so large sessions keep working.
+    /// at 2560 bytes (current sessions are ~320); an oversized save
+    /// fails and surfaces as a login error rather than degrading to a
+    /// plain-text file.
     #[cfg(windows)]
     mod wincred {
         use windows_sys::Win32::Foundation::FILETIME;
@@ -259,39 +261,42 @@ pub mod session {
         wincred::delete(server_id)
     }
 
-    #[cfg(not(any(target_os = "macos", windows)))]
-    fn keychain_load(_: &str) -> Option<String> {
-        None
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    fn keychain_save(_: &str, _: &str) -> bool {
-        false
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    fn keychain_delete(_: &str) -> bool {
-        false
+    /// Load a session from the platform credential store.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn load(_crewkit_dir: &Path, server_id: &str) -> Option<String> {
+        keychain_load(server_id)
     }
 
-    /// Load a session, migrating tokens saved in the pre-Keychain token file.
-    pub fn load(crewkit_dir: &Path, server_id: &str) -> Option<String> {
-        if let Some(secret) = keychain_load(server_id) {
-            return Some(secret);
-        }
-        let legacy = legacy_path(crewkit_dir, server_id);
-        let secret = std::fs::read_to_string(&legacy).ok()?;
-        if keychain_save(server_id, &secret) {
-            let _ = std::fs::remove_file(&legacy);
-        }
-        Some(secret)
-    }
-
-    pub fn save(crewkit_dir: &Path, server_id: &str, secret: &str) -> std::io::Result<()> {
+    /// Store a session. A credential-store failure is an error the
+    /// caller must report — the secret is never written to disk instead.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn save(_crewkit_dir: &Path, server_id: &str, secret: &str) -> std::io::Result<()> {
         if keychain_save(server_id, secret) {
-            let _ = std::fs::remove_file(legacy_path(crewkit_dir, server_id));
-            return Ok(());
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                "could not store the session in the system credential store",
+            ))
         }
-        // Non-mac (or Keychain unavailable): 0600 file fallback.
-        let path = legacy_path(crewkit_dir, server_id);
+    }
+
+    /// Drop a session; returns whether one existed.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn delete(_crewkit_dir: &Path, server_id: &str) -> bool {
+        keychain_delete(server_id)
+    }
+
+    // Platforms without a native credential store (Linux dev builds)
+    // keep the 0600 token file as their only storage.
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn load(crewkit_dir: &Path, server_id: &str) -> Option<String> {
+        std::fs::read_to_string(token_path(crewkit_dir, server_id)).ok()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn save(crewkit_dir: &Path, server_id: &str, secret: &str) -> std::io::Result<()> {
+        let path = token_path(crewkit_dir, server_id);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -304,12 +309,9 @@ pub mod session {
         Ok(())
     }
 
-    /// Drop a session everywhere; returns whether one existed.
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub fn delete(crewkit_dir: &Path, server_id: &str) -> bool {
-        let in_keychain = keychain_delete(server_id);
-        let legacy = legacy_path(crewkit_dir, server_id);
-        let in_file = std::fs::remove_file(&legacy).is_ok();
-        in_keychain || in_file
+        std::fs::remove_file(token_path(crewkit_dir, server_id)).is_ok()
     }
 }
 
@@ -323,7 +325,7 @@ mod wincred_tests {
         let id = format!("crewkit-selftest-{}", std::process::id());
 
         session::save(tmp.path(), &id, "s3cret").unwrap();
-        // The secret lives in the Credential Manager, not the file fallback.
+        // The secret lives in the Credential Manager — nothing lands on disk.
         assert!(!tmp.path().join("auth").join(format!("{id}.json")).exists());
         assert_eq!(session::load(tmp.path(), &id).as_deref(), Some("s3cret"));
 

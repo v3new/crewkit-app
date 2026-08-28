@@ -990,9 +990,10 @@ impl Engine {
         // Drop the CrewKit-level session (best-effort server-side
         // revocation) — only when removing from every client: a scoped
         // removal leaves the session for the clients that keep the server.
-        let token_file = crewkit_dir.join("auth").join(format!("{}.json", server.id));
-        if targets.is_none() && token_file.exists() {
+        if targets.is_none() && bridge::session::load(&crewkit_dir, &server.id).is_some() {
             let bridge_bin = bridge::bridge_path(&crewkit_dir);
+            // The bridge revokes server-side before deleting; when it is
+            // missing or fails, drop the local session directly.
             let logged_out = bridge_bin.exists()
                 && cli::run(
                     &bridge_bin,
@@ -1003,7 +1004,7 @@ impl Engine {
                 .map(|o| o.success())
                 .unwrap_or(false);
             if !logged_out {
-                let _ = std::fs::remove_file(&token_file);
+                let _ = bridge::session::delete(&crewkit_dir, &server.id);
             }
             emit(ok_step(
                 &format!("Log out {}", server.id),
