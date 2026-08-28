@@ -48,7 +48,7 @@ Two findings make the "zero terminal" promise real:
 
 A kit is one JSON manifest published at a URL, with a detached ed25519 signature and
 sha256-pinned artifact downloads (live example:
-[crewkit.v3new.dev/kit/mindbox-int-csm.json](https://crewkit.v3new.dev/kit/mindbox-int-csm.json)).
+[crewkit.v3new.dev/kit/marketing.json](https://crewkit.v3new.dev/kit/marketing.json)).
 The full format is an open spec: **[docs/kit-spec.md](docs/kit-spec.md)** (CC BY 4.0).
 Highlights:
 
@@ -71,7 +71,7 @@ Highlights:
 
 Publisher tooling ships in the CLI: `crewkit kit keygen <name>` and
 `crewkit kit sign <manifest> <secret-key-file>`. Users add kits via the in-app URL field
-or a deep link: `crewkit://add?kit=https://crewkit.v3new.dev/kit/mindbox-int-csm.json`.
+or a deep link: `crewkit://add?kit=https://crewkit.v3new.dev/kit/marketing.json`.
 
 Every staged skill passes the `skill-translate` check: frontmatter is validated against a
 declarative mapping table ([adapters/frontmatter-map.json](adapters/frontmatter-map.json)),
@@ -118,7 +118,7 @@ CREWKIT_E2E=1 cargo test -p crewkit-core --test e2e -- --nocapture
 cargo run -p crewkit-cli -- scan
 # install needs the kit payload zips; point CREWKIT_ASSETS at a dir with skills/
 CREWKIT_ASSETS=~/path/to/published-kit cargo run -p crewkit-cli -- install
-cargo run -p crewkit-cli -- remove mcp mindbox-mcp-beta
+cargo run -p crewkit-cli -- remove mcp posthog
 
 # run the app in dev mode
 cd desktop && npm install && npm run tauri dev
