@@ -111,9 +111,10 @@ pub fn auth_status(kit: &Kit, crewkit_dir: &Path) -> Vec<AuthState> {
 pub mod session {
     use std::path::{Path, PathBuf};
 
-    // Only the macOS Keychain path references this; other platforms use
-    // the file fallback and would flag it as dead code.
-    #[cfg(target_os = "macos")]
+    // Only the macOS Keychain and Windows Credential Manager paths
+    // reference this; other platforms use the file fallback and would
+    // flag it as dead code.
+    #[cfg(any(target_os = "macos", windows))]
     const SERVICE: &str = "CrewKit MCP";
 
     fn legacy_path(crewkit_dir: &Path, server_id: &str) -> PathBuf {
@@ -171,15 +172,102 @@ pub mod session {
             .unwrap_or(false)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    /// Windows Credential Manager, generic credentials via wincred.
+    /// Target name is `CrewKit MCP/<server id>`, so entries are legible
+    /// in the system Credential Manager UI. The OS caps a generic blob
+    /// at 2560 bytes; an oversized save fails and the caller falls back
+    /// to the token file, so large sessions keep working.
+    #[cfg(windows)]
+    mod wincred {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Security::Credentials::{
+            CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
+            CRED_TYPE_GENERIC,
+        };
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        fn target(server_id: &str) -> Vec<u16> {
+            wide(&format!("{}/{}", super::SERVICE, server_id))
+        }
+
+        pub fn load(server_id: &str) -> Option<String> {
+            let target = target(server_id);
+            let mut handle: *mut CREDENTIALW = std::ptr::null_mut();
+            // SAFETY: `target` is NUL-terminated; on success `handle`
+            // points to an OS-allocated credential freed via CredFree.
+            unsafe {
+                if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut handle) == 0 {
+                    return None;
+                }
+                let cred = &*handle;
+                let blob = std::slice::from_raw_parts(
+                    cred.CredentialBlob,
+                    cred.CredentialBlobSize as usize,
+                );
+                let secret = String::from_utf8(blob.to_vec()).ok();
+                CredFree(handle.cast());
+                secret.filter(|s| !s.is_empty())
+            }
+        }
+
+        pub fn save(server_id: &str, secret: &str) -> bool {
+            let target = target(server_id);
+            let mut user = wide("crewkit");
+            let blob = secret.as_bytes();
+            let credential = CREDENTIALW {
+                Flags: 0,
+                Type: CRED_TYPE_GENERIC,
+                TargetName: target.as_ptr() as *mut u16,
+                Comment: std::ptr::null_mut(),
+                LastWritten: FILETIME {
+                    dwLowDateTime: 0,
+                    dwHighDateTime: 0,
+                },
+                CredentialBlobSize: blob.len() as u32,
+                CredentialBlob: blob.as_ptr() as *mut u8,
+                Persist: CRED_PERSIST_LOCAL_MACHINE,
+                AttributeCount: 0,
+                Attributes: std::ptr::null_mut(),
+                TargetAlias: std::ptr::null_mut(),
+                UserName: user.as_mut_ptr(),
+            };
+            // SAFETY: every pointer in `credential` outlives this call;
+            // CredWriteW copies what it needs before returning.
+            unsafe { CredWriteW(&credential, 0) != 0 }
+        }
+
+        pub fn delete(server_id: &str) -> bool {
+            let target = target(server_id);
+            // SAFETY: `target` is a NUL-terminated wide string.
+            unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) != 0 }
+        }
+    }
+
+    #[cfg(windows)]
+    fn keychain_load(server_id: &str) -> Option<String> {
+        wincred::load(server_id)
+    }
+    #[cfg(windows)]
+    fn keychain_save(server_id: &str, secret: &str) -> bool {
+        wincred::save(server_id, secret)
+    }
+    #[cfg(windows)]
+    fn keychain_delete(server_id: &str) -> bool {
+        wincred::delete(server_id)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn keychain_load(_: &str) -> Option<String> {
         None
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn keychain_save(_: &str, _: &str) -> bool {
         false
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn keychain_delete(_: &str) -> bool {
         false
     }
@@ -222,5 +310,27 @@ pub mod session {
         let legacy = legacy_path(crewkit_dir, server_id);
         let in_file = std::fs::remove_file(&legacy).is_ok();
         in_keychain || in_file
+    }
+}
+
+#[cfg(all(test, windows))]
+mod wincred_tests {
+    use super::session;
+
+    #[test]
+    fn credential_manager_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = format!("crewkit-selftest-{}", std::process::id());
+
+        session::save(tmp.path(), &id, "s3cret").unwrap();
+        // The secret lives in the Credential Manager, not the file fallback.
+        assert!(!tmp.path().join("auth").join(format!("{id}.json")).exists());
+        assert_eq!(session::load(tmp.path(), &id).as_deref(), Some("s3cret"));
+
+        // Overwrite in place, then drop it.
+        session::save(tmp.path(), &id, "rotated").unwrap();
+        assert_eq!(session::load(tmp.path(), &id).as_deref(), Some("rotated"));
+        assert!(session::delete(tmp.path(), &id));
+        assert_eq!(session::load(tmp.path(), &id), None);
     }
 }
