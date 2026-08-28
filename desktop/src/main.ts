@@ -353,18 +353,20 @@ const t = (key: string): string => STRINGS[lang]?.[key] ?? STRINGS.en[key] ?? ke
 
 // --- Presentation of the two ecosystems ---
 
-// `surfaces` is what the status columns aggregate; `targets` is the set
-// of adapter client ids a scoped install/remove for that column touches.
+// Columns group each vendor's apps into one scope and are labeled by the
+// vendor (Anthropic / OpenAI), never by an individual app or product brand.
+// `surfaces` is what the status columns aggregate; `targets` is the set of
+// adapter client ids a scoped install/remove for that column touches.
 const COLUMNS = [
   {
-    id: "claude",
-    label: "Claude",
+    id: "anthropic",
+    label: "Anthropic",
     surfaces: ["claude-code", "claude-desktop"],
     targets: ["claude-code", "claude-desktop"],
   },
   {
-    id: "chatgpt",
-    label: "ChatGPT",
+    id: "openai",
+    label: "OpenAI",
     surfaces: ["codex"],
     targets: ["codex", "chatgpt-desktop"],
   },
@@ -377,6 +379,42 @@ const SURFACE_LABEL: Record<string, string> = {
   "claude-desktop": "Claude Desktop",
   codex: "Codex",
 };
+
+// --- Persistent event log ---
+
+// The Details journal survives restarts: every recorded event (installs,
+// removals, kit changes, app updates) is kept with its timestamp, newest
+// last, in a backend file (events.json next to the kit registry), capped
+// so it stays small.
+type LogEntry = StepReport & { atMs: number };
+
+interface EventLogFile {
+  appVersion: string | null;
+  entries: LogEntry[];
+}
+
+const LOG_MAX = 500;
+
+/// Every save rewrites the whole file; chaining keeps saves ordered so
+/// an older snapshot can never land after a newer one.
+let logSaveChain = Promise.resolve();
+
+function persistLog(): void {
+  logSaveChain = logSaveChain.then(() =>
+    invoke("save_event_log", { log: { appVersion: __APP_VERSION__, entries: logSteps } }).then(
+      () => undefined,
+      // A failed save only loses history, never breaks the app.
+      () => undefined
+    )
+  );
+}
+
+function logEvents(...steps: StepReport[]): void {
+  const atMs = Date.now();
+  logSteps.push(...steps.map((s) => ({ ...s, atMs })));
+  if (logSteps.length > LOG_MAX) logSteps.splice(0, logSteps.length - LOG_MAX);
+  persistLog();
+}
 
 // --- State ---
 
@@ -391,7 +429,13 @@ let kits: KitCard[] = [];
 const scans = new Map<string, ScanReport>();
 const installing = new Set<string>();
 let currentStep = "";
-let logSteps: StepReport[] = [];
+let logSteps: LogEntry[] = [];
+/// Only failures from this session light the red footer badge; older
+/// ones are history. (The log may be front-trimmed, so compare by time.)
+const sessionStartMs = Date.now();
+/// Live install-step events appended during the current full install;
+/// the final report's steps are authoritative and replace them.
+let liveLogCount = 0;
 let restartNeeded: string[] = [];
 let fatalError: string | null = null;
 let loaded = false;
@@ -433,6 +477,16 @@ function fmtDate(ms: number): string {
     day: "numeric",
     month: "short",
     year: "numeric",
+  });
+}
+
+function fmtTime(ms: number): string {
+  return new Date(ms).toLocaleString(LOCALES[lang] ?? "en", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
   });
 }
 
@@ -500,16 +554,16 @@ function renderFooterStatus(): string {
   const byId = (id: string) => scan.clients.find((c) => c.id === id);
   const groups = [
     {
-      label: "Claude",
+      label: "Anthropic",
       surfaces: [
-        { name: "Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "" },
-        { name: "Code CLI", found: !!byId("claude-code")?.cliPath, path: byId("claude-code")?.cliPath ?? "" },
+        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "" },
+        { name: "Claude Code CLI", found: !!byId("claude-code")?.cliPath, path: byId("claude-code")?.cliPath ?? "" },
       ],
     },
     {
-      label: "ChatGPT",
+      label: "OpenAI",
       surfaces: [
-        { name: "Desktop", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "" },
+        { name: "ChatGPT Desktop", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "" },
         { name: "Codex CLI", found: !!byId("codex")?.cliPath, path: byId("codex")?.cliPath ?? "" },
       ],
     },
@@ -551,7 +605,7 @@ function renderFooterStatus(): string {
 
   // Failures must be visible without opening the log: a per-cell install
   // whose only steps failed otherwise looks like "nothing happened".
-  const failedCount = logSteps.filter((s) => s.status === "failed").length;
+  const failedCount = logSteps.filter((s) => s.status === "failed" && s.atMs >= sessionStartMs).length;
   return `<div class="foot-status">
     ${pills}
     <span class="foot-summary ${allDone ? "status-ok" : ""}">${esc(summary)}</span>
@@ -688,8 +742,8 @@ function renderSelectionBar(): string {
   return `<div class="selbar">
     <span class="selbar-count">${esc(t("selectedN").replace("{n}", String(selected.size)))}</span>
     <span class="selbar-label">${t("installToLabel")}</span>
-    <button class="tb-btn sel-install" data-arg="claude" ${disabled}>Claude</button>
-    <button class="tb-btn sel-install" data-arg="chatgpt" ${disabled}>ChatGPT</button>
+    <button class="tb-btn sel-install" data-arg="anthropic" ${disabled}>Anthropic</button>
+    <button class="tb-btn sel-install" data-arg="openai" ${disabled}>OpenAI</button>
     <button class="tb-btn sel-install" data-arg="both" ${disabled}>${t("both")}</button>
     <span class="spacer"></span>
     <button class="link remove sel-remove ${confirming.has("sel-remove") ? "confirm" : ""}" ${disabled}>
@@ -784,10 +838,18 @@ function renderAddKit(): string {
 
 function renderLog(): string {
   if (logSteps.length === 0) return `<span class="log"></span>`;
+  return `<span class="log">
+    <button id="log-toggle" class="link log-toggle${logOpen ? " open" : ""}">${t("details")} (${logSteps.length})</button>
+  </span>`;
+}
+
+function renderLogRows(): string {
+  if (!logOpen || logSteps.length === 0) return "";
   const rows = logSteps
     .map(
       (s) => `
       <div class="log-row log-row--${s.status}">
+        <span class="log-time">${esc(fmtTime(s.atMs))}</span>
         <span class="log-status">${s.status}</span>
         <span class="log-client">${esc(s.client)}</span>
         <span>${esc(s.step)}</span>
@@ -795,16 +857,7 @@ function renderLog(): string {
       </div>`
     )
     .join("");
-  const last = logSteps[logSteps.length - 1];
-  return `<details class="log" id="log" ${logOpen ? "open" : ""}>
-    <summary>
-      <span class="log-toggle">${t("details")} (${logSteps.length})</span>
-      <span class="log-latest log-row--${last.status}">
-        <span class="log-status">${last.status}</span> ${esc(last.client)} · ${esc(last.step)}${last.message ? ` — ${esc(last.message)}` : ""}
-      </span>
-    </summary>
-    <div class="log-rows">${rows}</div>
-  </details>`;
+  return `<div class="log-rows">${rows}</div>`;
 }
 
 function render(): void {
@@ -864,13 +917,19 @@ function render(): void {
         </select>
         <span class="version">v${__APP_VERSION__}</span>
       </span>
+      ${renderLogRows()}
     </footer>`;
 
   document.querySelector("#rescan")?.addEventListener("click", () => void rescanAll());
   document.querySelector("#install-update")?.addEventListener("click", () => void installAppUpdate());
-  document.querySelector("#log")?.addEventListener("toggle", (e) => {
-    logOpen = (e.target as HTMLDetailsElement).open;
+  document.querySelector("#log-toggle")?.addEventListener("click", () => {
+    logOpen = !logOpen;
+    render();
   });
+  // Each render rebuilds the footer, so re-pin the open log to its
+  // newest entry.
+  const logRows = document.querySelector(".log-rows");
+  if (logRows) logRows.scrollTop = logRows.scrollHeight;
   app.querySelectorAll<HTMLButtonElement>("button.install").forEach((b) =>
     b.addEventListener("click", () => void install(b.dataset.arg!))
   );
@@ -986,6 +1045,7 @@ async function installAppUpdate(): Promise<void> {
     // On success the app restarts itself; this call never resolves.
     await invoke("install_app_update");
   } catch (e) {
+    logEvents({ step: "App update", client: "crewkit", status: "failed", message: String(e) });
     appUpdateError = String(e);
     updatingApp = false;
     render();
@@ -1021,17 +1081,18 @@ async function rescanAll(): Promise<void> {
 async function install(kitId: string): Promise<void> {
   installing.add(kitId);
   currentStep = "";
-  logSteps = [];
+  liveLogCount = 0;
   restartNeeded = [];
   render();
   try {
     const report = await invoke<InstallReport>("install_kit", { kitId });
-    logSteps = report.steps;
+    if (liveLogCount) logSteps.splice(-liveLogCount);
+    logEvents(...report.steps);
     restartNeeded = report.restartNeeded;
     scans.set(kitId, report.scan);
     await loadKits();
   } catch (e) {
-    logSteps.push({ step: "Install", client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: "Install", client: "crewkit", status: "failed", message: String(e) });
   }
   installing.delete(kitId);
   render();
@@ -1063,11 +1124,11 @@ async function applyScoped(
       action === "install"
         ? await invoke<InstallReport>("install_items", { kitId, clients, items })
         : await invoke<InstallReport>("remove_items", { kitId, clients, items: items ?? [] });
-    logSteps.push(...report.steps);
+    logEvents(...report.steps);
     mergeRestart(report.restartNeeded);
     scans.set(kitId, report.scan);
   } catch (e) {
-    logSteps.push({
+    logEvents({
       step: action === "install" ? "Install" : "Remove",
       client: "crewkit",
       status: "failed",
@@ -1171,7 +1232,7 @@ async function authAction(command: "authorize" | "deauthorize", serverId: string
   try {
     await invoke(command, { serverId });
   } catch (e) {
-    logSteps.push({ step: `${command} ${serverId}`, client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: `${command} ${serverId}`, client: "crewkit", status: "failed", message: String(e) });
   }
   busy.delete(`auth:${serverId}`);
   await rescanAll();
@@ -1192,11 +1253,11 @@ async function removeItem(key: string): Promise<void> {
   const [kitId, kind, id] = key.split(" ");
   try {
     const report = await invoke<InstallReport>("remove_item", { kitId, kind, id });
-    logSteps.push(...report.steps);
+    logEvents(...report.steps);
     restartNeeded = report.restartNeeded;
     scans.set(kitId, report.scan);
   } catch (e) {
-    logSteps.push({ step: `Remove ${id}`, client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: `Remove ${id}`, client: "crewkit", status: "failed", message: String(e) });
   }
   busy.delete(key);
   render();
@@ -1215,10 +1276,11 @@ async function removeKit(kitId: string): Promise<void> {
   confirming.delete(key);
   try {
     await invoke("remove_kit", { kitId });
+    logEvents({ step: "Remove kit", client: "crewkit", status: "ok", message: kitId });
     scans.delete(kitId);
     await rescanAll();
   } catch (e) {
-    logSteps.push({ step: `Remove kit ${kitId}`, client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: `Remove kit ${kitId}`, client: "crewkit", status: "failed", message: String(e) });
     render();
   }
 }
@@ -1227,7 +1289,7 @@ async function changeChannel(kitId: string, channel: string): Promise<void> {
   try {
     await invoke("set_channel", { kitId, channel });
   } catch (e) {
-    logSteps.push({ step: `Channel ${channel}`, client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: `Channel ${channel}`, client: "crewkit", status: "failed", message: String(e) });
   }
   await rescanAll();
 }
@@ -1236,7 +1298,7 @@ async function changeBundle(kitId: string, bundle: string | null): Promise<void>
   try {
     await invoke("set_bundle", { kitId, bundle });
   } catch (e) {
-    logSteps.push({ step: "Bundle", client: "crewkit", status: "failed", message: String(e) });
+    logEvents({ step: "Bundle", client: "crewkit", status: "failed", message: String(e) });
   }
   await rescanAll();
 }
@@ -1249,10 +1311,12 @@ async function addKit(): Promise<void> {
   render();
   try {
     await invoke("add_kit", { url });
+    logEvents({ step: "Add kit", client: "crewkit", status: "ok", message: url });
     addKitUrl = "";
     addKitOpen = false;
     await rescanAll();
   } catch (e) {
+    logEvents({ step: "Add kit", client: "crewkit", status: "failed", message: String(e) });
     addKitError = String(e);
   }
   addingKit = false;
@@ -1260,10 +1324,30 @@ async function addKit(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // The journal loads before anything can write to it. A successful app
+  // update restarts the app, so it can only be recorded here: the file
+  // carrying a different writer's version means an update landed.
+  const stored = await invoke<EventLogFile>("load_event_log").catch(() => null);
+  if (stored) {
+    logSteps = stored.entries.filter((e) => e && typeof e.atMs === "number");
+    if (stored.appVersion && stored.appVersion !== __APP_VERSION__) {
+      logEvents({
+        step: "App update",
+        client: "crewkit",
+        status: "ok",
+        message: `v${stored.appVersion} → v${__APP_VERSION__}`,
+      });
+    } else {
+      // Stamp the current version even when nothing else changed.
+      persistLog();
+    }
+  }
+
   await listen<StepReport>("install-step", (event) => {
     currentStep = `${event.payload.step}…`;
     if (installing.size) {
-      logSteps.push(event.payload);
+      logEvents(event.payload);
+      liveLogCount++;
       render();
     } else if (working.size) {
       // Scoped runs append the report's steps once at the end; live

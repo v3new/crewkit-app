@@ -774,7 +774,6 @@ button.chip--ok:hover {
 /* --- Footer --- */
 
 footer {
-  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -791,80 +790,34 @@ footer {
   flex: 1;
 }
 
-/* A real log (a <details> with steps) keeps its toggle intact and
-   lets the latest-entry preview absorb the shrinking; when the row
-   gets too tight it wraps onto its own footer line instead. */
-details.log {
-  flex: 1 1 auto;
-  min-width: min(100%, 240px);
-}
-
-.log summary {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  list-style: none;
-  color: var(--muted);
-}
-
-.log-toggle {
-  flex: none;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: var(--hairline);
-}
-
-.log summary:hover .log-toggle {
+.log-toggle.open {
   color: var(--text);
 }
 
-.log summary::-webkit-details-marker {
-  display: none;
-}
-
-.log[open] .log-toggle {
-  color: var(--text);
-}
-
-.log-latest {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 10.5px;
-  color: var(--muted);
-}
-
-.log[open] .log-latest {
-  visibility: hidden;
-}
-
-/* The step log opens as a drawer panel above the footer, so the
-   footer itself always stays one line tall. */
+/* The step log unfolds downward: a full-width footer line below the
+   summary row, so the footer grows and the content area shrinks. */
 .log-rows {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: calc(100% + 6px);
-  z-index: 40;
+  flex: 1 1 100%;
   max-height: 220px;
   overflow-y: auto;
   padding: 8px 12px;
   background: var(--card);
   border: 1px solid var(--hairline);
   border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(30, 29, 23, 0.2);
 }
 
 .log-row {
   display: grid;
-  grid-template-columns: 40px 96px 1fr 1.1fr;
+  grid-template-columns: 86px 40px 96px 1fr 1.1fr;
   gap: 8px;
   padding: 2px 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 10.5px;
+}
+
+.log-time {
+  color: var(--faint);
+  white-space: nowrap;
 }
 
 .log-row--ok .log-status {

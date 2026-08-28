@@ -537,6 +537,40 @@ async fn install_app_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+// --- Event log (the footer's Details journal) ---
+
+/// The journal outlives sessions as a plain file next to the kit
+/// registry. Entry shape is owned by the UI; the backend just stores it.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct EventLog {
+    /// Version of the app that last wrote the file; the UI compares it
+    /// with its own to record completed self-updates.
+    #[serde(default)]
+    app_version: Option<String>,
+    #[serde(default)]
+    entries: Vec<serde_json::Value>,
+}
+
+fn events_path() -> PathBuf {
+    crewkit_dir().join("events.json")
+}
+
+/// A missing or corrupt journal is an empty one, never an error.
+#[tauri::command]
+fn load_event_log() -> EventLog {
+    std::fs::read_to_string(events_path())
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn save_event_log(log: EventLog) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&log).map_err(|e| e.to_string())?;
+    crewkit_core::fsops::atomic_write(&events_path(), json.as_bytes()).map_err(|e| e.to_string())
+}
+
 // --- Background updates (tray) ---
 
 /// Quietly re-install every kit (idempotent: updates what changed, skips
@@ -586,7 +620,9 @@ pub fn run() {
             authorize,
             deauthorize,
             check_app_update,
-            install_app_update
+            install_app_update,
+            load_event_log,
+            save_event_log
         ])
         .setup(|app| {
             // Tray: CrewKit keeps kits fresh in the background.
