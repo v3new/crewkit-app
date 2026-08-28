@@ -111,6 +111,9 @@ pub fn auth_status(kit: &Kit, crewkit_dir: &Path) -> Vec<AuthState> {
 pub mod session {
     use std::path::{Path, PathBuf};
 
+    // Only the macOS Keychain path references this; other platforms use
+    // the file fallback and would flag it as dead code.
+    #[cfg(target_os = "macos")]
     const SERVICE: &str = "CrewKit MCP";
 
     fn legacy_path(crewkit_dir: &Path, server_id: &str) -> PathBuf {
