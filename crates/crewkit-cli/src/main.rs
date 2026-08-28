@@ -152,7 +152,12 @@ fn scan(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<(), String> {
             .as_ref()
             .map(|p| format!("  cli: {}", p.display()))
             .unwrap_or_default();
-        println!("  [{mark}] {}{cli}", client.name);
+        let version = client
+            .cli_version
+            .as_ref()
+            .map(|v| format!(" (v{v})"))
+            .unwrap_or_default();
+        println!("  [{mark}] {}{cli}{version}", client.name);
     }
 
     println!("\nKit items:");

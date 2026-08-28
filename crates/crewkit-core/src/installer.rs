@@ -387,10 +387,16 @@ impl Engine {
                             }
                             continue;
                         }
-                        let ok = run_cli_step(
+                        let ok = run_cli_step_optional_flag(
                             &claude_cli,
-                            // --yes: headless accept of marketplace-declared prompts.
+                            // --yes (2.1.238+): headless accept of marketplace-
+                            // declared prompts. Older CLIs reject it as unknown
+                            // and are retried without it — this is safe: only a
+                            // plugin with a headersHelper ever prompts, and the
+                            // flag exists on every version that supports those.
                             &["plugin", "install", "--scope", "user", "--yes", &plugin_id],
+                            "--yes",
+                            "Claude Code is older than 2.1.238 — consider updating it",
                             &env,
                             &format!("Install plugin {plugin_id}"),
                             "claude-code",
@@ -510,15 +516,20 @@ impl Engine {
         }
 
         // 4. Codex: plugins via CLI; MCP written directly into config.toml
-        //    (`codex mcp add` can hang on its post-write OAuth probe).
+        //    (`codex mcp add` can hang on its post-write OAuth probe) — so
+        //    a machine that uses Codex only through the ChatGPT / Codex
+        //    desktop app (no CLI anywhere) still gets its MCP servers.
         let mut codex_changed = false;
-        match client("codex").and_then(|c| c.cli_path.clone()) {
-            Some(codex_cli) if scope.wants_client("codex") => {
-                // The CLI refuses to run when CODEX_HOME does not exist.
-                let _ = std::fs::create_dir_all(&self.paths.codex_home);
+        let codex_cli = client("codex").and_then(|c| c.cli_path.clone());
+        let codex_present = client("codex").map(|c| c.present).unwrap_or(false);
+        if scope.wants_client("codex") && (codex_cli.is_some() || codex_present) {
+            // The CLI refuses to run when CODEX_HOME does not exist, and
+            // the direct config.toml writes below need it too.
+            let _ = std::fs::create_dir_all(&self.paths.codex_home);
+            if let Some(codex_cli) = &codex_cli {
                 let mut registered = plugins_pass
                     && run_cli_step(
-                        &codex_cli,
+                        codex_cli,
                         &["plugin", "marketplace", "add", &marketplace_path],
                         &env,
                         "Register marketplace",
@@ -535,7 +546,7 @@ impl Engine {
                         .unwrap_or(false);
                     if stale {
                         let _ = cli::run(
-                            &codex_cli,
+                            codex_cli,
                             &[
                                 "plugin",
                                 "marketplace",
@@ -546,7 +557,7 @@ impl Engine {
                             CLI_TIMEOUT,
                         );
                         registered = run_cli_step(
-                            &codex_cli,
+                            codex_cli,
                             &["plugin", "marketplace", "add", &marketplace_path],
                             &env,
                             "Re-register marketplace",
@@ -572,7 +583,7 @@ impl Engine {
                                     // `codex plugin add` installs the new
                                     // version from the refreshed snapshot.
                                     let ok = run_cli_step(
-                                        &codex_cli,
+                                        codex_cli,
                                         &["plugin", "add", &plugin_id],
                                         &env,
                                         &format!("Update plugin {plugin_id} to v{next}"),
@@ -597,7 +608,7 @@ impl Engine {
                             continue;
                         }
                         let ok = run_cli_step(
-                            &codex_cli,
+                            codex_cli,
                             &["plugin", "add", &plugin_id],
                             &env,
                             &format!("Install plugin {plugin_id}"),
@@ -611,85 +622,92 @@ impl Engine {
                         }
                     }
                 }
-                let config_toml = self.paths.codex_home.join("config.toml");
-                for server in wanted_servers.iter().copied() {
-                    if !bridge_ok {
-                        break;
-                    }
-                    let state_managed = state
-                        .mcp_servers
-                        .contains(&ManagedState::key("codex", &server.id));
-                    let step_name = format!("Add MCP server {}", server.id);
-                    match mcp::adopt_codex_url_duplicates(
-                        &config_toml,
-                        &server.url,
-                        &server.id,
-                        &mut snap,
-                    ) {
-                        Ok(dups) => {
-                            for dup in dups {
-                                codex_changed = true;
-                                push(
-                                    ok_step(
-                                        &format!(
-                                            "Adopt MCP server {} (drop duplicate `{dup}`)",
-                                            server.id
-                                        ),
-                                        "codex",
-                                        "same endpoint — now served by the CrewKit entry",
-                                    ),
-                                    &mut steps,
-                                );
-                            }
-                        }
-                        Err(e) => push(failed(&step_name, "codex", &e.to_string()), &mut steps),
-                    }
-                    match mcp::ensure_codex_server(
-                        &config_toml,
-                        &server.id,
-                        &bridge_bin,
-                        state_managed,
-                        &mut snap,
-                    ) {
-                        Ok(outcome) => {
-                            if matches!(
-                                outcome,
-                                Outcome::Installed | Outcome::Updated | Outcome::Adopted
-                            ) {
-                                codex_changed = true;
-                            }
-                            state
-                                .mcp_servers
-                                .insert(ManagedState::key("codex", &server.id));
-                            push(outcome_step(&step_name, "codex", outcome), &mut steps);
-                        }
-                        Err(e) => push(
-                            StepReport {
-                                step: step_name,
-                                client: "codex".into(),
-                                status: StepStatus::Failed,
-                                message: e.to_string(),
-                            },
-                            &mut steps,
-                        ),
-                    }
-                }
+            } else if plugins_pass {
+                push(
+                    skipped(
+                        "Codex plugins",
+                        "codex",
+                        "codex CLI not found — MCP servers are configured directly, \
+                         but plugins need the CLI; install it and rerun",
+                    ),
+                    &mut steps,
+                );
             }
-            _ => {
-                if scope.wants_client("codex") {
-                    push(
+            let config_toml = self.paths.codex_home.join("config.toml");
+            for server in wanted_servers.iter().copied() {
+                if !bridge_ok {
+                    break;
+                }
+                let state_managed = state
+                    .mcp_servers
+                    .contains(&ManagedState::key("codex", &server.id));
+                let step_name = format!("Add MCP server {}", server.id);
+                match mcp::adopt_codex_url_duplicates(
+                    &config_toml,
+                    &server.url,
+                    &server.id,
+                    &mut snap,
+                ) {
+                    Ok(dups) => {
+                        for dup in dups {
+                            codex_changed = true;
+                            push(
+                                ok_step(
+                                    &format!(
+                                        "Adopt MCP server {} (drop duplicate `{dup}`)",
+                                        server.id
+                                    ),
+                                    "codex",
+                                    "same endpoint — now served by the CrewKit entry",
+                                ),
+                                &mut steps,
+                            );
+                        }
+                    }
+                    Err(e) => push(failed(&step_name, "codex", &e.to_string()), &mut steps),
+                }
+                match mcp::ensure_codex_server(
+                    &config_toml,
+                    &server.id,
+                    &bridge_bin,
+                    state_managed,
+                    &mut snap,
+                ) {
+                    Ok(outcome) => {
+                        if matches!(
+                            outcome,
+                            Outcome::Installed | Outcome::Updated | Outcome::Adopted
+                        ) {
+                            codex_changed = true;
+                        }
+                        state
+                            .mcp_servers
+                            .insert(ManagedState::key("codex", &server.id));
+                        push(outcome_step(&step_name, "codex", outcome), &mut steps);
+                    }
+                    Err(e) => push(
                         StepReport {
-                            step: "Codex install".into(),
+                            step: step_name,
                             client: "codex".into(),
-                            status: StepStatus::Skipped,
-                            message:
-                                "codex CLI not found (neither on PATH nor bundled in ChatGPT.app)"
-                                    .into(),
+                            status: StepStatus::Failed,
+                            message: e.to_string(),
                         },
                         &mut steps,
-                    );
+                    ),
                 }
             }
+        } else if scope.wants_client("codex") {
+            push(
+                StepReport {
+                    step: "Codex install".into(),
+                    client: "codex".into(),
+                    status: StepStatus::Skipped,
+                    message:
+                        "Codex not found — no codex CLI on PATH or bundled, and no ~/.codex config"
+                            .into(),
+                },
+                &mut steps,
+            );
         }
 
         // 5. Claude Desktop: its local config is stdio-only, so it gets the
@@ -698,10 +716,7 @@ impl Engine {
         let desktop = client("claude-desktop");
         let desktop_wanted = scope.wants_client("claude-desktop") && mcp_pass;
         if desktop_wanted && desktop.map(|c| c.app_installed).unwrap_or(false) && bridge_ok {
-            let desktop_config = self
-                .paths
-                .app_support
-                .join("Claude/claude_desktop_config.json");
+            let desktop_config = self.paths.claude_desktop_config();
             for server in wanted_servers.iter().copied() {
                 let state_managed = state
                     .mcp_servers
@@ -1077,10 +1092,7 @@ impl Engine {
                 .map(|c| c.app_installed)
                 .unwrap_or(false)
         {
-            let desktop_config = self
-                .paths
-                .app_support
-                .join("Claude/claude_desktop_config.json");
+            let desktop_config = self.paths.claude_desktop_config();
             let owned =
                 find_status(items, "mcp", "claude-desktop", &server.id) == Status::Installed;
             match mcp::remove_json_server(&desktop_config, &server.id, owned, snap) {
@@ -1262,44 +1274,81 @@ fn run_cli_step(
     push: &mut impl FnMut(StepReport, &mut Vec<StepReport>),
     steps: &mut Vec<StepReport>,
 ) -> bool {
-    match cli::run(program, args, env, CLI_TIMEOUT) {
-        Ok(output) if output.success() => {
-            push(
-                StepReport {
-                    step: step.into(),
-                    client: client.into(),
-                    status: StepStatus::Ok,
-                    message: tail(&output.combined()),
-                },
-                steps,
-            );
-            true
-        }
-        Ok(output) => {
-            push(
-                StepReport {
-                    step: step.into(),
-                    client: client.into(),
-                    status: StepStatus::Failed,
-                    message: tail(&output.combined()),
-                },
-                steps,
-            );
-            false
-        }
-        Err(e) => {
-            push(
-                StepReport {
-                    step: step.into(),
-                    client: client.into(),
-                    status: StepStatus::Failed,
-                    message: e.to_string(),
-                },
-                steps,
-            );
-            false
-        }
+    push_cli_outcome(
+        cli::run(program, args, env, CLI_TIMEOUT),
+        step,
+        client,
+        None,
+        push,
+        steps,
+    )
+}
+
+/// Like `run_cli_step`, but when the CLI rejects `flag` as an unknown
+/// option (an older client version), retries the same call without it;
+/// `retry_hint` explains the downgrade in the step message.
+#[allow(clippy::too_many_arguments)]
+fn run_cli_step_optional_flag(
+    program: &std::path::Path,
+    args: &[&str],
+    flag: &str,
+    retry_hint: &str,
+    env: &[(String, String)],
+    step: &str,
+    client: &str,
+    push: &mut impl FnMut(StepReport, &mut Vec<StepReport>),
+    steps: &mut Vec<StepReport>,
+) -> bool {
+    let first = cli::run(program, args, env, CLI_TIMEOUT);
+    let flag_unknown = matches!(
+        first,
+        Ok(ref output) if !output.success()
+            && output.combined().contains(&format!("unknown option '{flag}'"))
+    );
+    if !flag_unknown {
+        return push_cli_outcome(first, step, client, None, push, steps);
     }
+    let retry: Vec<&str> = args.iter().copied().filter(|a| *a != flag).collect();
+    let note = format!("retried without {flag}: {retry_hint}");
+    push_cli_outcome(
+        cli::run(program, &retry, env, CLI_TIMEOUT),
+        step,
+        client,
+        Some(&note),
+        push,
+        steps,
+    )
+}
+
+/// Report one CLI run as a step, appending `note` when there is one;
+/// returns true when the run succeeded.
+fn push_cli_outcome(
+    result: Result<cli::CliOutput>,
+    step: &str,
+    client: &str,
+    note: Option<&str>,
+    push: &mut impl FnMut(StepReport, &mut Vec<StepReport>),
+    steps: &mut Vec<StepReport>,
+) -> bool {
+    let (status, message) = match &result {
+        Ok(output) if output.success() => (StepStatus::Ok, tail(&output.combined())),
+        Ok(output) => (StepStatus::Failed, tail(&output.combined())),
+        Err(e) => (StepStatus::Failed, e.to_string()),
+    };
+    let message = match note {
+        Some(note) => format!("{message} ({note})"),
+        None => message,
+    };
+    push(
+        StepReport {
+            step: step.into(),
+            client: client.into(),
+            status,
+            message,
+        },
+        steps,
+    );
+    status == StepStatus::Ok
 }
 
 /// Keep step messages readable: last line, capped length.
@@ -1315,4 +1364,81 @@ fn tail(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fake claude that rejects `--yes` the way pre-2.1.238 versions
+    /// do, and installs fine without it.
+    #[test]
+    #[cfg(unix)]
+    fn optional_flag_retries_without_unknown_flag() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--yes\" ]; then\n    echo \"error: unknown option '--yes'\" >&2\n    exit 1\n  fi\ndone\necho installed\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut steps = Vec::new();
+        let mut push = |report: StepReport, steps: &mut Vec<StepReport>| steps.push(report);
+        let ok = run_cli_step_optional_flag(
+            &fake,
+            &["plugin", "install", "--yes", "demo@kit"],
+            "--yes",
+            "client too old",
+            &[],
+            "Install plugin demo@kit",
+            "claude-code",
+            &mut push,
+            &mut steps,
+        );
+        assert!(ok);
+        assert_eq!(steps.len(), 1, "one step per install: {steps:?}");
+        assert_eq!(steps[0].status, StepStatus::Ok);
+        assert!(
+            steps[0].message.contains("installed")
+                && steps[0].message.contains("retried without --yes"),
+            "{}",
+            steps[0].message
+        );
+    }
+
+    /// A genuine failure (not the unknown-option shape) must not retry.
+    #[test]
+    #[cfg(unix)]
+    fn optional_flag_reports_other_failures_verbatim() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho \"network unreachable\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut steps = Vec::new();
+        let mut push = |report: StepReport, steps: &mut Vec<StepReport>| steps.push(report);
+        let ok = run_cli_step_optional_flag(
+            &fake,
+            &["plugin", "install", "--yes", "demo@kit"],
+            "--yes",
+            "client too old",
+            &[],
+            "Install plugin demo@kit",
+            "claude-code",
+            &mut push,
+            &mut steps,
+        );
+        assert!(!ok);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].status, StepStatus::Failed);
+        assert_eq!(steps[0].message, "network unreachable");
+    }
 }

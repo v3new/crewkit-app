@@ -6,12 +6,13 @@
     "bundledGlobs": [
       "/Applications/ChatGPT.app/Contents/Resources/codex",
       "${appSupport}/npm/codex.cmd",
-      "${home}/.local/bin/codex.exe"
+      "${home}/.local/bin/codex.exe",
+      "${localAppData}/OpenAI/Codex/bin/*/codex.exe"
     ]
   },
   "files": {
     "config": "${codexHome}/config.toml"
   },
   "restartRequired": false,
-  "notes": "The Codex CLI ships inside ChatGPT.app, so CrewKit can drive it even when no codex binary is on PATH. Configuration is shared between Codex CLI, the ChatGPT Desktop Codex surface, and the IDE extension."
+  "notes": "The Codex CLI ships inside ChatGPT.app on macOS, and the Windows Codex desktop app materializes it under %LOCALAPPDATA%/OpenAI/Codex/bin/<hash>/ (it also adds that dir to the user PATH, but GUI processes may hold a stale environment snapshot — hence the glob). Configuration is shared between Codex CLI, the desktop app's Codex surface, and the IDE extension."
 }

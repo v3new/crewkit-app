@@ -299,8 +299,7 @@ pub fn inventory(
     // claude_desktop_config.json (its local config is stdio-only). The app
     // may rewrite this file and drop unknown keys, so ownership is judged
     // by the bridge shape plus CrewKit's state.
-    let desktop_config =
-        fsops::read_json(&paths.app_support.join("Claude/claude_desktop_config.json"))?;
+    let desktop_config = fsops::read_json(&paths.claude_desktop_config())?;
     let desktop_servers = desktop_config.as_ref().and_then(|c| c.get("mcpServers"));
     for server in kit.active_mcp_servers() {
         let default_detail = "crewkit-bridge (stdio) in claude_desktop_config.json".to_string();

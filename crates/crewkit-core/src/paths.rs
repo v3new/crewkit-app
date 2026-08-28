@@ -72,6 +72,22 @@ impl Paths {
         self.app_support.join("CrewKit")
     }
 
+    /// Claude Desktop's config file. The Microsoft Store (MSIX) build
+    /// runs under filesystem virtualization: the app's `%APPDATA%\Claude`
+    /// reads and writes are redirected into its package's LocalCache, so
+    /// a config written to the real `%APPDATA%` is invisible to it. When
+    /// that virtualized directory exists, it is the one the app reads.
+    /// (The package family name is stable across machines.)
+    pub fn claude_desktop_config(&self) -> PathBuf {
+        let store = self
+            .local_app_data
+            .join("Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude");
+        if store.is_dir() {
+            return store.join("claude_desktop_config.json");
+        }
+        self.app_support.join("Claude/claude_desktop_config.json")
+    }
+
     /// Expand `${var}` templates used in adapter definitions.
     pub fn expand(&self, template: &str) -> PathBuf {
         let expanded = template
@@ -99,5 +115,31 @@ impl Paths {
                 self.codex_home.to_string_lossy().into_owned(),
             ),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_config_prefers_store_localcache_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted(tmp.path());
+
+        let default = paths.claude_desktop_config();
+        assert_eq!(
+            default,
+            paths.app_support.join("Claude/claude_desktop_config.json")
+        );
+
+        let store = paths
+            .local_app_data
+            .join("Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude");
+        std::fs::create_dir_all(&store).unwrap();
+        assert_eq!(
+            paths.claude_desktop_config(),
+            store.join("claude_desktop_config.json")
+        );
     }
 }

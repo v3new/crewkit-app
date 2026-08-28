@@ -572,3 +572,72 @@ fn mcp_entry_extensions() {
     let ids: Vec<_> = auth.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(ids, ["oauth-srv", "future-srv"]);
 }
+
+/// A machine that uses Codex only through the desktop app: `~/.codex`
+/// exists (with a config.toml) but no codex CLI is anywhere. MCP
+/// servers are written straight into config.toml, so they must install
+/// anyway; only plugins wait for a CLI, with an explanatory skip.
+#[test]
+fn codex_mcp_installs_without_a_cli() {
+    use crewkit_core::inventory::Status;
+    use crewkit_core::{Adapter, Engine, StepStatus};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+    let (kit, zips_dir) = synth_kit(tmp.path());
+
+    // A codex adapter with no discoverable CLI — only the config file
+    // probe. Adapters are data, so the no-CLI machine is just this.
+    let codex = Adapter::load(
+        r#"{
+          "id": "codex",
+          "name": "Codex",
+          "cli": { "pathNames": [], "bundledGlobs": [] },
+          "files": { "config": "${codexHome}/config.toml" }
+        }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(&paths.codex_home).unwrap();
+    std::fs::write(paths.codex_home.join("config.toml"), "").unwrap();
+
+    let bridge_source = tmp.path().join("bridge-source");
+    std::fs::write(&bridge_source, b"#!/bin/sh\nexit 0\n").unwrap();
+    let engine = Engine {
+        paths: paths.clone(),
+        adapters: vec![codex],
+        kit,
+        zips_dir,
+        bridge_source,
+        frontmatter_map: frontmatter_map(),
+    };
+
+    let report = engine.install(|_| {}).unwrap();
+    assert!(
+        !report.steps.iter().any(|s| s.status == StepStatus::Failed),
+        "no step may fail: {:#?}",
+        report.steps
+    );
+    // Plugins wait for a CLI — and say so.
+    let plugin_skip = report
+        .steps
+        .iter()
+        .find(|s| s.client == "codex" && s.step == "Codex plugins")
+        .expect("plugins skip step");
+    assert_eq!(plugin_skip.status, StepStatus::Skipped);
+    assert!(plugin_skip.message.contains("plugins need the CLI"));
+    // The MCP server landed in config.toml regardless (the exact TOML
+    // rendering varies — check the parsed value).
+    let toml = std::fs::read_to_string(paths.codex_home.join("config.toml")).unwrap();
+    let doc: toml_edit::DocumentMut = toml.parse().unwrap();
+    let cmd = doc["mcp_servers"]["test-mcp"]["command"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(cmd.ends_with("crewkit-bridge"), "{toml}");
+    let installed = report
+        .scan
+        .items
+        .iter()
+        .find(|i| i.kind == "mcp" && i.client == "codex" && i.id == "test-mcp")
+        .unwrap();
+    assert_eq!(installed.status, Status::Installed);
+}

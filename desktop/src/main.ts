@@ -52,6 +52,7 @@ interface DetectedClient {
   name: string;
   appInstalled: boolean;
   cliPath: string | null;
+  cliVersion: string | null;
   files: { key: string; path: string; exists: boolean }[];
   restartRequired: boolean;
   notes: string | null;
@@ -122,6 +123,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     removeConfirm: "Remove everywhere?",
     removing: "Removing…",
     details: "Details",
+    copyLog: "Copy",
+    copied: "Copied",
     restart: "Restart",
     restartTail: "to pick up the changes",
     scanning: "Scanning this computer…",
@@ -186,6 +189,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     removeConfirm: "Удалить везде?",
     removing: "Удаляем…",
     details: "Детали",
+    copyLog: "Скопировать",
+    copied: "Скопировано",
     restart: "Перезапустите",
     restartTail: "чтобы подхватить изменения",
     scanning: "Сканируем этот компьютер…",
@@ -250,6 +255,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     removeConfirm: "¿Eliminar de todos?",
     removing: "Eliminando…",
     details: "Detalles",
+    copyLog: "Copiar",
+    copied: "Copiado",
     restart: "Reinicia",
     restartTail: "para aplicar los cambios",
     scanning: "Escaneando este equipo…",
@@ -314,6 +321,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     removeConfirm: "从所有客户端移除？",
     removing: "移除中…",
     details: "详情",
+    copyLog: "复制",
+    copied: "已复制",
     restart: "请重启",
     restartTail: "以应用更改",
     scanning: "正在扫描此电脑…",
@@ -452,6 +461,8 @@ let addKitUrl = "";
 let addingKit = false;
 let addKitError = "";
 let logOpen = false;
+/// Transient "Copied" feedback on the log's copy button.
+let logCopied = false;
 const busy = new Set<string>();
 const confirming = new Set<string>();
 /// Multi-select for batch install/remove: keys are kit␟kind␟id.
@@ -557,19 +568,21 @@ function renderFooterStatus(): string {
   const scan = scans.values().next().value as ScanReport | undefined;
   if (!scan) return "";
   const byId = (id: string) => scan.clients.find((c) => c.id === id);
+  const cliOf = (id: string) => byId(id)?.cliPath ?? "";
+  const versionOf = (id: string) => byId(id)?.cliVersion ?? "";
   const groups = [
     {
       label: "Anthropic",
       surfaces: [
-        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "" },
-        { name: "Claude Code CLI", found: !!byId("claude-code")?.cliPath, path: byId("claude-code")?.cliPath ?? "" },
+        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "", version: "" },
+        { name: "Claude Code CLI", found: !!cliOf("claude-code"), path: cliOf("claude-code"), version: versionOf("claude-code") },
       ],
     },
     {
       label: "OpenAI",
       surfaces: [
-        { name: "ChatGPT Desktop", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "" },
-        { name: "Codex CLI", found: !!byId("codex")?.cliPath, path: byId("codex")?.cliPath ?? "" },
+        { name: "ChatGPT / Codex app", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "", version: "" },
+        { name: "Codex CLI", found: !!cliOf("codex"), path: cliOf("codex"), version: versionOf("codex") },
       ],
     },
   ];
@@ -578,7 +591,7 @@ function renderFooterStatus(): string {
       const found = g.surfaces.filter((s) => s.found);
       const detail = g.surfaces
         .map(
-          (s) => `<div>${esc(s.name)} — ${s.found ? t("found") : t("notFound")}</div>
+          (s) => `<div>${esc(s.name)}${s.version ? ` v${esc(s.version)}` : ""} — ${s.found ? t("found") : t("notFound")}</div>
             ${s.found && s.path ? `<div class="tip-sub">${esc(s.path)}</div>` : ""}`
         )
         .join("");
@@ -845,7 +858,41 @@ function renderLog(): string {
   if (logSteps.length === 0) return `<span class="log"></span>`;
   return `<span class="log">
     <button id="log-toggle" class="link log-toggle${logOpen ? " open" : ""}">${t("details")} (${logSteps.length})</button>
+    ${logOpen ? `<button id="log-copy" class="link">${logCopied ? t("copied") : t("copyLog")}</button>` : ""}
   </span>`;
+}
+
+/// The journal renders as flex spans, so selecting it by hand copies the
+/// columns glued together — this builds the plain-text form instead,
+/// prefixed with the detected clients so a pasted log carries the
+/// context support always asks for (which CLI, which version, where).
+function logAsText(): string {
+  const clients = new Map<string, DetectedClient>();
+  for (const scan of scans.values()) for (const c of scan.clients) clients.set(c.id, c);
+  const header = [`CrewKit v${__APP_VERSION__}`];
+  for (const c of clients.values()) {
+    const cli = c.cliPath ? `${c.cliVersion ? `v${c.cliVersion} ` : ""}${c.cliPath}` : "no CLI";
+    header.push(`# ${c.id}: ${c.present ? cli : "not found"}`);
+  }
+  const lines = logSteps.map(
+    (s) => `${fmtTime(s.atMs)}\t${s.status}\t${s.client}\t${s.step}\t${s.message}`
+  );
+  return [...header, ...lines].join("\n");
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // The async clipboard can be unavailable on the webview's custom
+    // scheme; fall back to a selection-based copy.
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
 }
 
 function renderLogRows(): string {
@@ -930,6 +977,16 @@ function render(): void {
   document.querySelector("#log-toggle")?.addEventListener("click", () => {
     logOpen = !logOpen;
     render();
+  });
+  document.querySelector("#log-copy")?.addEventListener("click", () => {
+    void copyText(logAsText()).then(() => {
+      logCopied = true;
+      render();
+      setTimeout(() => {
+        logCopied = false;
+        render();
+      }, 1500);
+    });
   });
   // Each render rebuilds the footer, so re-pin the open log to its
   // newest entry.
