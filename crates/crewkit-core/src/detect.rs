@@ -25,6 +25,9 @@ pub struct DetectedClient {
     pub id: String,
     pub name: String,
     pub app_installed: bool,
+    /// The desktop app's own version (distinct from the CLI's) — read
+    /// from the bundle's Info.plist on macOS, None elsewhere.
+    pub app_version: Option<String>,
     /// Resolved CLI binary — from PATH, or bundled inside the client's
     /// app package (clients ship their CLI even when the user never
     /// installed one; CrewKit drives that binary directly).
@@ -43,7 +46,13 @@ pub fn detect_all(adapters: &[Adapter], paths: &Paths) -> Vec<DetectedClient> {
 }
 
 fn detect_one(adapter: &Adapter, paths: &Paths) -> DetectedClient {
-    let app_installed = adapter.app_paths.iter().any(|p| paths.expand(p).exists());
+    let app_path = adapter
+        .app_paths
+        .iter()
+        .map(|p| paths.expand(p))
+        .find(|p| p.exists());
+    let app_installed = app_path.is_some();
+    let app_version = app_path.as_deref().and_then(app_bundle_version);
 
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(spec) = adapter.cli.as_ref() {
@@ -80,6 +89,7 @@ fn detect_one(adapter: &Adapter, paths: &Paths) -> DetectedClient {
         id: adapter.id.clone(),
         name: adapter.name.clone(),
         app_installed,
+        app_version,
         cli_path,
         cli_version,
         files,
@@ -87,6 +97,37 @@ fn detect_one(adapter: &Adapter, paths: &Paths) -> DetectedClient {
         notes: adapter.notes.clone(),
         present,
     }
+}
+
+/// `CFBundleShortVersionString` of a macOS app bundle, via `defaults`
+/// (Info.plist may be binary — `defaults` reads both, no plist parser
+/// needed; apps are never launched for this). None off macOS and for
+/// paths that are not `.app` bundles (Windows install dirs).
+#[cfg(target_os = "macos")]
+fn app_bundle_version(app_path: &std::path::Path) -> Option<String> {
+    if app_path.extension().is_none_or(|e| e != "app") {
+        return None;
+    }
+    let plist = app_path.join("Contents/Info");
+    let output = cli::run(
+        std::path::Path::new("/usr/bin/defaults"),
+        &[
+            "read",
+            &plist.to_string_lossy(),
+            "CFBundleShortVersionString",
+        ],
+        &[],
+        VERSION_PROBE_TIMEOUT,
+    )
+    .ok()
+    .filter(|o| o.success())?;
+    let version = output.stdout.trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_bundle_version(_app_path: &std::path::Path) -> Option<String> {
+    None
 }
 
 /// A ranked CLI candidate: version numbers, mtime, path, display version.
@@ -212,6 +253,41 @@ mod tests {
         let (best, version) = pick_cli(fakes.clone());
         assert_eq!(best.as_deref(), Some(fakes[1].as_path()));
         assert_eq!(version.as_deref(), Some("2.1.246"));
+    }
+
+    /// An app bundle's version comes from its Info.plist, without
+    /// launching anything.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn app_bundle_version_reads_info_plist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted(tmp.path());
+        let app = paths.home.join("Applications/Fake.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleShortVersionString</key>
+  <string>9.9.9</string>
+</dict>
+</plist>
+"#,
+        )
+        .unwrap();
+        let adapter = crate::adapter::Adapter::load(
+            r#"{
+              "id": "fake",
+              "name": "Fake",
+              "appPaths": ["${home}/Applications/Fake.app"]
+            }"#,
+        )
+        .unwrap();
+        let detected = detect_all(&[adapter], &paths);
+        assert!(detected[0].app_installed);
+        assert_eq!(detected[0].app_version.as_deref(), Some("9.9.9"));
     }
 
     /// A candidate that cannot answer `--version` is still usable when

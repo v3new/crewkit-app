@@ -5,9 +5,19 @@
     "pathNames": ["codex"],
     "bundledGlobs": [
       "/Applications/ChatGPT.app/Contents/Resources/codex",
+      "/Applications/Codex.app/Contents/Resources/codex",
+      "${home}/Applications/ChatGPT.app/Contents/Resources/codex",
+      "${home}/Applications/Codex.app/Contents/Resources/codex",
       "${appSupport}/npm/codex.cmd",
       "${home}/.local/bin/codex.exe",
-      "${localAppData}/OpenAI/Codex/bin/*/codex.exe"
+      "${localAppData}/OpenAI/Codex/bin/*/codex.exe",
+      "${home}/.local/bin/codex",
+      "/opt/homebrew/bin/codex",
+      "/usr/local/bin/codex",
+      "${home}/.nvm/versions/node/*/bin/codex",
+      "${home}/.volta/bin/codex",
+      "${home}/Library/pnpm/codex",
+      "${home}/.asdf/shims/codex"
     ]
   },
   "files": {

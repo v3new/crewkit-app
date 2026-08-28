@@ -147,6 +147,11 @@ fn scan(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<(), String> {
     println!("Clients:");
     for client in &report.clients {
         let mark = if client.present { "+" } else { "-" };
+        let app = client
+            .app_version
+            .as_ref()
+            .map(|v| format!("  app: v{v}"))
+            .unwrap_or_default();
         let cli = client
             .cli_path
             .as_ref()
@@ -157,7 +162,7 @@ fn scan(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<(), String> {
             .as_ref()
             .map(|v| format!(" (v{v})"))
             .unwrap_or_default();
-        println!("  [{mark}] {}{cli}{version}", client.name);
+        println!("  [{mark}] {}{app}{cli}{version}", client.name);
     }
 
     println!("\nKit items:");

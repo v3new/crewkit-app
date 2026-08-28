@@ -3,9 +3,12 @@
   "name": "ChatGPT / Codex",
   "appPaths": [
     "/Applications/ChatGPT.app",
+    "/Applications/Codex.app",
+    "${home}/Applications/ChatGPT.app",
+    "${home}/Applications/Codex.app",
     "${localAppData}/Packages/OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
     "${localAppData}/Packages/OpenAI.Codex_2p2nqsd0c76g0"
   ],
   "restartRequired": true,
-  "notes": "Shares ~/.codex configuration with the Codex CLI; restart to pick up config changes. On Windows both the ChatGPT app and the standalone Codex desktop app install from the Microsoft Store under their package-family directories."
+  "notes": "Shares ~/.codex configuration with the Codex CLI; restart to pick up config changes. On Windows both the ChatGPT app and the standalone Codex desktop app install from the Microsoft Store under their package-family directories. On macOS the unified app is ChatGPT.app (bundle id com.openai.codex since the July 2026 merger); Codex.app is the pre-merger standalone that can linger."
 }

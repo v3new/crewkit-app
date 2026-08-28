@@ -35,8 +35,10 @@ pub struct CliSpec {
     /// Binary names to look up on PATH.
     #[serde(default)]
     pub path_names: Vec<String>,
-    /// Glob templates for binaries bundled inside app packages —
-    /// lets CrewKit drive clients even when no CLI is on PATH.
+    /// Glob templates for binaries bundled inside app packages, plus
+    /// well-known install dirs (Homebrew, npm managers, ~/.local/bin) —
+    /// a GUI process launched from Finder/Explorer gets a minimal PATH,
+    /// so these locations must be probed directly.
     #[serde(default)]
     pub bundled_globs: Vec<String>,
     /// A helper tool the install path needs (e.g. `npx` for the

@@ -3,6 +3,7 @@
   "name": "Claude Desktop",
   "appPaths": [
     "/Applications/Claude.app",
+    "${home}/Applications/Claude.app",
     "${localAppData}/AnthropicClaude",
     "${localAppData}/Packages/Claude_pzs8sxrjxfjjc"
   ],

@@ -51,6 +51,7 @@ interface DetectedClient {
   id: string;
   name: string;
   appInstalled: boolean;
+  appVersion: string | null;
   cliPath: string | null;
   cliVersion: string | null;
   files: { key: string; path: string; exists: boolean }[];
@@ -570,18 +571,19 @@ function renderFooterStatus(): string {
   const byId = (id: string) => scan.clients.find((c) => c.id === id);
   const cliOf = (id: string) => byId(id)?.cliPath ?? "";
   const versionOf = (id: string) => byId(id)?.cliVersion ?? "";
+  const appVersionOf = (id: string) => byId(id)?.appVersion ?? "";
   const groups = [
     {
       label: "Anthropic",
       surfaces: [
-        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "", version: "" },
+        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "", version: appVersionOf("claude-desktop") },
         { name: "Claude Code CLI", found: !!cliOf("claude-code"), path: cliOf("claude-code"), version: versionOf("claude-code") },
       ],
     },
     {
       label: "OpenAI",
       surfaces: [
-        { name: "ChatGPT / Codex app", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "", version: "" },
+        { name: "ChatGPT / Codex app", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "", version: appVersionOf("chatgpt-desktop") },
         { name: "Codex CLI", found: !!cliOf("codex"), path: cliOf("codex"), version: versionOf("codex") },
       ],
     },
@@ -871,8 +873,10 @@ function logAsText(): string {
   for (const scan of scans.values()) for (const c of scan.clients) clients.set(c.id, c);
   const header = [`CrewKit v${__APP_VERSION__}`];
   for (const c of clients.values()) {
-    const cli = c.cliPath ? `${c.cliVersion ? `v${c.cliVersion} ` : ""}${c.cliPath}` : "no CLI";
-    header.push(`# ${c.id}: ${c.present ? cli : "not found"}`);
+    const parts: string[] = [];
+    if (c.appInstalled) parts.push(`app${c.appVersion ? ` v${c.appVersion}` : ""}`);
+    if (c.cliPath) parts.push(`${c.cliVersion ? `v${c.cliVersion} ` : ""}${c.cliPath}`);
+    header.push(`# ${c.id}: ${parts.length ? parts.join(" · ") : c.present ? "present (no CLI)" : "not found"}`);
   }
   const lines = logSteps.map(
     (s) => `${fmtTime(s.atMs)}\t${s.status}\t${s.client}\t${s.step}\t${s.message}`

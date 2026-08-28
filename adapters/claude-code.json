@@ -7,7 +7,14 @@
       "${appSupport}/Claude/claude-code/*/claude.app/Contents/MacOS/claude",
       "${appSupport}/Claude/claude-code/*/claude.exe",
       "${appSupport}/npm/claude.cmd",
-      "${home}/.local/bin/claude.exe"
+      "${home}/.local/bin/claude.exe",
+      "${home}/.local/bin/claude",
+      "/opt/homebrew/bin/claude",
+      "/usr/local/bin/claude",
+      "${home}/.nvm/versions/node/*/bin/claude",
+      "${home}/.volta/bin/claude",
+      "${home}/Library/pnpm/claude",
+      "${home}/.asdf/shims/claude"
     ]
   },
   "files": {
@@ -16,5 +23,5 @@
     "installedPlugins": "${claudeConfigDir}/plugins/installed_plugins.json"
   },
   "restartRequired": false,
-  "notes": "Plugins and MCP servers installed at user scope are also picked up by Claude Cowork local sessions, which read the same user settings. On Windows the native installer puts claude.exe in ~/.local/bin and npm installs a claude.cmd shim — both are probed in case the GUI process misses them on PATH."
+  "notes": "Plugins and MCP servers installed at user scope are also picked up by Claude Cowork local sessions, which read the same user settings. The GUI process gets a minimal PATH on both platforms, so every install channel is probed directly: the native installer's ~/.local/bin (claude on macOS/Linux, claude.exe on Windows), Homebrew's bin dirs, npm shims (npm.cmd dir, nvm/volta/pnpm/asdf), and the copy bundled inside Claude Desktop. The newest version among the candidates wins."
 }
