@@ -77,6 +77,17 @@ body {
   border-bottom: 1px solid var(--hairline);
 }
 
+/* Windows keeps its native title bar (Tauri's Overlay title bar is
+   macOS-only), so the toolbar is a plain action bar: no traffic-light
+   inset and no duplicate window title. */
+:root[data-platform="windows"] .toolbar {
+  padding-left: 12px;
+}
+
+:root[data-platform="windows"] .wordmark {
+  display: none;
+}
+
 .wordmark {
   font-size: 13px;
   font-weight: 600;
@@ -143,6 +154,11 @@ button:disabled {
 
 .status-ok {
   color: var(--accent);
+  font-weight: 500;
+}
+
+.status-fail {
+  color: var(--fail);
   font-weight: 500;
 }
 

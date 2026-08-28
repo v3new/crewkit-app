@@ -4,7 +4,10 @@
   "cli": {
     "pathNames": ["claude"],
     "bundledGlobs": [
-      "${appSupport}/Claude/claude-code/*/claude.app/Contents/MacOS/claude"
+      "${appSupport}/Claude/claude-code/*/claude.app/Contents/MacOS/claude",
+      "${appSupport}/Claude/claude-code/*/claude.exe",
+      "${appSupport}/npm/claude.cmd",
+      "${home}/.local/bin/claude.exe"
     ]
   },
   "files": {
@@ -13,5 +16,5 @@
     "installedPlugins": "${claudeConfigDir}/plugins/installed_plugins.json"
   },
   "restartRequired": false,
-  "notes": "Plugins and MCP servers installed at user scope are also picked up by Claude Cowork local sessions, which read the same user settings."
+  "notes": "Plugins and MCP servers installed at user scope are also picked up by Claude Cowork local sessions, which read the same user settings. On Windows the native installer puts claude.exe in ~/.local/bin and npm installs a claude.cmd shim — both are probed in case the GUI process misses them on PATH."
 }

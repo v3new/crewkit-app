@@ -1,7 +1,10 @@
 {
   "id": "chatgpt-desktop",
   "name": "ChatGPT Desktop",
-  "appPaths": ["/Applications/ChatGPT.app"],
+  "appPaths": [
+    "/Applications/ChatGPT.app",
+    "${localAppData}/Packages/OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0"
+  ],
   "restartRequired": true,
-  "notes": "Shares ~/.codex configuration with the Codex CLI; restart to pick up config changes."
+  "notes": "Shares ~/.codex configuration with the Codex CLI; restart to pick up config changes. On Windows the app installs from the Microsoft Store under its package-family directory."
 }

@@ -701,7 +701,7 @@ fn process_alive(pid: u32) -> bool {
 fn process_alive(pid: u32) -> bool {
     // tasklist prints a table row for a live pid and an info message
     // otherwise; matching the pid in the output separates the two.
-    std::process::Command::new("tasklist")
+    crewkit_core::cli::command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
@@ -799,7 +799,7 @@ fn open_browser(url: &str) {
     let (program, args): (&str, &[&str]) = ("rundll32", &["url.dll,FileProtocolHandler"]);
     #[cfg(not(any(target_os = "macos", windows)))]
     let (program, args): (&str, &[&str]) = ("xdg-open", &[]);
-    if std::process::Command::new(program)
+    if crewkit_core::cli::command(program)
         .args(args)
         .arg(url)
         .spawn()

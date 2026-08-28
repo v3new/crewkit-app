@@ -7,7 +7,10 @@ on:
 
 jobs:
   core:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -15,7 +18,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format
+        if: matrix.os == 'macos-latest'
         run: cargo fmt --all --check
+      # Clippy runs on both: cfg(windows) code paths only compile there.
       - name: Lint
         run: cargo clippy -p crewkit-core -p crewkit-bridge -p crewkit-cli --all-targets -- -D warnings
       - name: Test

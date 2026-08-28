@@ -3,7 +3,11 @@
   "name": "Codex",
   "cli": {
     "pathNames": ["codex"],
-    "bundledGlobs": ["/Applications/ChatGPT.app/Contents/Resources/codex"]
+    "bundledGlobs": [
+      "/Applications/ChatGPT.app/Contents/Resources/codex",
+      "${appSupport}/npm/codex.cmd",
+      "${home}/.local/bin/codex.exe"
+    ]
   },
   "files": {
     "config": "${codexHome}/config.toml"

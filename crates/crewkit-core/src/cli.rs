@@ -21,6 +21,21 @@ impl CliOutput {
     }
 }
 
+/// A `Command` that never flashes a console window: CrewKit's GUI process
+/// has no console on Windows, so every child console process would pop
+/// its own window for a moment without CREATE_NO_WINDOW.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Run a client CLI with a hard timeout. Some client commands block on
 /// network or interactive auth (observed with `codex mcp add`), and a
 /// hung child process must never hang the installer.
@@ -31,7 +46,7 @@ pub fn run(
     timeout: Duration,
 ) -> Result<CliOutput> {
     let command_desc = format!("{} {}", program.display(), args.join(" "));
-    let mut child = Command::new(program)
+    let mut child = command(program)
         .args(args)
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())

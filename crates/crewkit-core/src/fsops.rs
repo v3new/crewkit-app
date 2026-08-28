@@ -46,12 +46,14 @@ impl Snapshotter {
         if !file.exists() || self.taken.iter().any(|t| t == file) {
             return Ok(None);
         }
-        // Flatten the absolute path into a single file name.
-        let name = file
-            .to_string_lossy()
-            .trim_start_matches('/')
-            .replace('/', "__");
+        let name = flatten_path(file);
         let dest = self.dir.join(&name);
+        if dest == file {
+            return Err(Error::Invalid(format!(
+                "snapshot destination resolves to the source file: {}",
+                file.display()
+            )));
+        }
         std::fs::create_dir_all(&self.dir)
             .map_err(io_ctx(format!("creating {}", self.dir.display())))?;
         std::fs::copy(file, &dest).map_err(io_ctx(format!("snapshotting {}", file.display())))?;
@@ -69,6 +71,22 @@ impl Snapshotter {
         )?;
         Ok(Some(dest))
     }
+}
+
+/// Flatten an absolute path into a single file name. Every separator and
+/// the Windows drive colon must go: a name that keeps a root (`C:\…`)
+/// would make `dir.join(name)` resolve back to the source file itself,
+/// and copying a file onto itself fails with a sharing violation.
+fn flatten_path(file: &Path) -> String {
+    let name: String = file
+        .to_string_lossy()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '_',
+            c => c,
+        })
+        .collect();
+    name.trim_matches('_').to_string()
 }
 
 /// Restore every file from the most recent snapshot. Returns the restored
@@ -112,18 +130,18 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     let mut command;
     #[cfg(target_os = "macos")]
     {
-        command = std::process::Command::new("/usr/bin/ditto");
+        command = crate::cli::command("/usr/bin/ditto");
         command.args(["-x", "-k"]).arg(zip).arg(dest);
     }
     #[cfg(windows)]
     {
         // System bsdtar (ships with Windows 10+) extracts zip archives.
-        command = std::process::Command::new("tar");
+        command = crate::cli::command("tar");
         command.arg("-xf").arg(zip).arg("-C").arg(dest);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        command = std::process::Command::new("unzip");
+        command = crate::cli::command("unzip");
         command.args(["-o", "-q"]).arg(zip).arg("-d").arg(dest);
     }
     let program = command.get_program().to_string_lossy().into_owned();
@@ -169,4 +187,44 @@ pub fn read_json(path: &Path) -> Result<Option<serde_json::Value>> {
         message: e.to_string(),
     })?;
     Ok(Some(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flatten_path_strips_every_separator_and_drive_prefix() {
+        // Regression: a Windows path has no `/` to replace, so the old
+        // flattening left it absolute and `dir.join(name)` resolved to
+        // the source file itself (fs::copy onto itself → os error 32).
+        for raw in [
+            r"C:\Users\anton\.codex\config.toml",
+            "/Users/anton/.codex/config.toml",
+            r"\\server\share\config.toml",
+        ] {
+            let name = flatten_path(Path::new(raw));
+            assert!(!name.is_empty(), "{raw}");
+            assert!(!name.contains(['/', '\\', ':']), "{raw} -> {name}");
+            let joined = Path::new("base").join(&name);
+            assert!(joined.starts_with("base"), "{raw} -> {joined:?}");
+        }
+    }
+
+    #[test]
+    fn backup_lands_inside_the_snapshot_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("config.toml");
+        std::fs::write(&file, "original = true\n").unwrap();
+
+        let crewkit_dir = tmp.path().join("crewkit");
+        let mut snap = Snapshotter::new(&crewkit_dir);
+        let dest = snap.backup(&file).unwrap().expect("first backup taken");
+
+        assert_ne!(dest, file);
+        assert!(dest.starts_with(crewkit_dir.join("snapshots")));
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "original = true\n");
+        // Same file again in one run: already covered, no second copy.
+        assert!(snap.backup(&file).unwrap().is_none());
+    }
 }

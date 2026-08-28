@@ -39,11 +39,16 @@ pub fn synth_kit(root: &Path) -> (Kit, PathBuf) {
     )
     .unwrap();
 
+    // bsdtar (`tar` on both macOS and Windows 10+) writes zip archives
+    // when the output name ends in .zip (-a picks the format).
     for name in ["toolbox", "notes"] {
-        let status = Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--keepParent"])
-            .arg(sources.join(name))
+        let status = Command::new("tar")
+            .arg("-a")
+            .arg("-cf")
             .arg(zips.join(format!("{name}.zip")))
+            .arg("-C")
+            .arg(&sources)
+            .arg(name)
             .status()
             .unwrap();
         assert!(status.success());

@@ -123,7 +123,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     details: "Details",
     restart: "Restart",
     restartTail: "to pick up the changes",
-    scanning: "Scanning this Mac…",
+    scanning: "Scanning this computer…",
     updateAvailable: "CrewKit {v} is available",
     installUpdate: "Update & restart",
     updating: "Updating…",
@@ -136,6 +136,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     builtin: "built into the app",
     found: "found",
     notFound: "not found",
+    failedShort: "failed",
     retry: "Retry",
     kitUnavailable: "Kit unavailable",
     emptyTitle: "No kits yet",
@@ -185,7 +186,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     details: "Детали",
     restart: "Перезапустите",
     restartTail: "чтобы подхватить изменения",
-    scanning: "Сканируем этот Mac…",
+    scanning: "Сканируем этот компьютер…",
     updateAvailable: "Доступен CrewKit {v}",
     installUpdate: "Обновить и перезапустить",
     updating: "Обновляем…",
@@ -198,6 +199,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     builtin: "встроен в приложение",
     found: "найден",
     notFound: "не найден",
+    failedShort: "с ошибкой",
     retry: "Повторить",
     kitUnavailable: "Кит недоступен",
     emptyTitle: "Пока нет китов",
@@ -247,7 +249,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     details: "Detalles",
     restart: "Reinicia",
     restartTail: "para aplicar los cambios",
-    scanning: "Escaneando este Mac…",
+    scanning: "Escaneando este equipo…",
     updateAvailable: "CrewKit {v} disponible",
     installUpdate: "Actualizar y reiniciar",
     updating: "Actualizando…",
@@ -260,6 +262,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     builtin: "integrado en la app",
     found: "encontrado",
     notFound: "no encontrado",
+    failedShort: "con error",
     retry: "Reintentar",
     kitUnavailable: "Kit no disponible",
     emptyTitle: "Aún no hay kits",
@@ -309,7 +312,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     details: "详情",
     restart: "请重启",
     restartTail: "以应用更改",
-    scanning: "正在扫描此 Mac…",
+    scanning: "正在扫描此电脑…",
     updateAvailable: "CrewKit {v} 已发布",
     installUpdate: "更新并重启",
     updating: "更新中…",
@@ -322,6 +325,7 @@ const STRINGS: Record<string, Record<string, string>> = {
     builtin: "内置于应用",
     found: "已找到",
     notFound: "未找到",
+    failedShort: "失败",
     retry: "重试",
     kitUnavailable: "套件不可用",
     emptyTitle: "还没有套件",
@@ -375,6 +379,12 @@ const SURFACE_LABEL: Record<string, string> = {
 };
 
 // --- State ---
+
+// Platform hook for CSS: the toolbar is laid out around macOS traffic
+// lights, while Windows keeps its native title bar above our header.
+document.documentElement.dataset.platform = navigator.userAgent.includes("Windows")
+  ? "windows"
+  : "mac";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let kits: KitCard[] = [];
@@ -492,14 +502,14 @@ function renderFooterStatus(): string {
     {
       label: "Claude",
       surfaces: [
-        { name: "Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "/Applications/Claude.app" },
+        { name: "Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "" },
         { name: "Code CLI", found: !!byId("claude-code")?.cliPath, path: byId("claude-code")?.cliPath ?? "" },
       ],
     },
     {
       label: "ChatGPT",
       surfaces: [
-        { name: "Desktop", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "/Applications/ChatGPT.app" },
+        { name: "Desktop", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "" },
         { name: "Codex CLI", found: !!byId("codex")?.cliPath, path: byId("codex")?.cliPath ?? "" },
       ],
     },
@@ -539,9 +549,13 @@ function renderFooterStatus(): string {
       ? t("noClients")
       : `${allDone ? t("everything") : `${installed}/${total} ${t("ofInstalled")}`} · ${authorized}/${authTotal} ${t("serversAuthorized")}`;
 
+  // Failures must be visible without opening the log: a per-cell install
+  // whose only steps failed otherwise looks like "nothing happened".
+  const failedCount = logSteps.filter((s) => s.status === "failed").length;
   return `<div class="foot-status">
     ${pills}
     <span class="foot-summary ${allDone ? "status-ok" : ""}">${esc(summary)}</span>
+    ${failedCount ? `<span class="foot-summary status-fail">${failedCount} ${t("failedShort")}</span>` : ""}
   </div>`;
 }
 
