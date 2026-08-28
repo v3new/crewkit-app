@@ -7,7 +7,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::synth_kit;
-use crewkit_core::bridge::{install_bridge, stdio_entry, write_servers_config};
+use crewkit_core::bridge::{install_bridge, stdio_entry, write_servers_config, BRIDGE_BIN_NAME};
 use crewkit_core::fsops::Snapshotter;
 use crewkit_core::mcp::{ensure_codex_server, ensure_json_server, Outcome};
 use crewkit_core::translate::FrontmatterMap;
@@ -632,7 +632,7 @@ fn codex_mcp_installs_without_a_cli() {
     let cmd = doc["mcp_servers"]["test-mcp"]["command"]
         .as_str()
         .unwrap_or_default();
-    assert!(cmd.ends_with("crewkit-bridge"), "{toml}");
+    assert!(cmd.ends_with(BRIDGE_BIN_NAME), "{toml}");
     let installed = report
         .scan
         .items

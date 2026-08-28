@@ -11,6 +11,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::synth_kit;
+use crewkit_core::bridge::BRIDGE_BIN_NAME;
 use crewkit_core::inventory::Status;
 use crewkit_core::translate::FrontmatterMap;
 use crewkit_core::{Adapter, Engine, Paths, StepStatus};
@@ -108,7 +109,7 @@ fn full_install_roundtrip_in_sandbox() {
             .as_str()
             .unwrap_or_default();
         assert!(
-            cmd.ends_with("crewkit-bridge"),
+            cmd.ends_with(BRIDGE_BIN_NAME),
             "hand-added Claude entry must be adopted into the bridge shape, got: {claude_json}"
         );
     }
@@ -124,7 +125,7 @@ fn full_install_roundtrip_in_sandbox() {
         let cmd = doc["mcp_servers"]["test-mcp"]["command"]
             .as_str()
             .unwrap_or_default();
-        assert!(cmd.ends_with("crewkit-bridge"), "{toml}");
+        assert!(cmd.ends_with(BRIDGE_BIN_NAME), "{toml}");
     }
 
     // Second run must be a no-op: everything already installed or skipped.
