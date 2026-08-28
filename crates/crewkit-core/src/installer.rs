@@ -1366,14 +1366,14 @@ fn tail(text: &str) -> String {
     out
 }
 
-#[cfg(test)]
+// The fake-CLI shell scripts these tests drive are unix-only.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// A fake claude that rejects `--yes` the way pre-2.1.238 versions
     /// do, and installs fine without it.
     #[test]
-    #[cfg(unix)]
     fn optional_flag_retries_without_unknown_flag() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1411,7 +1411,6 @@ mod tests {
 
     /// A genuine failure (not the unknown-option shape) must not retry.
     #[test]
-    #[cfg(unix)]
     fn optional_flag_reports_other_failures_verbatim() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();

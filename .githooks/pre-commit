@@ -14,3 +14,17 @@ cargo fmt --all --check || {
 
 echo "pre-commit: cargo clippy (same flags as CI)"
 cargo clippy -p crewkit-core -p crewkit-bridge -p crewkit-cli --all-targets -- -D warnings
+
+# cfg(windows) code never compiles on macOS, so CI's Windows lint job can
+# fail where the local pass is clean. Cross-check it via the windows-gnu
+# target when the toolchain is available:
+#   brew install mingw-w64 && rustup target add x86_64-pc-windows-gnu
+if rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-gnu \
+    && command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    echo "pre-commit: cargo clippy --target x86_64-pc-windows-gnu (Windows cfg paths)"
+    cargo clippy -p crewkit-core -p crewkit-bridge -p crewkit-cli --all-targets \
+        --target x86_64-pc-windows-gnu -- -D warnings
+else
+    echo "pre-commit: SKIPPING Windows cross-check — install with:"
+    echo "  brew install mingw-w64 && rustup target add x86_64-pc-windows-gnu"
+fi

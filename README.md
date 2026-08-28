@@ -110,6 +110,8 @@ Prerequisites: Rust (stable), Node 20+.
 ```bash
 # one-time after cloning: run CI's fmt + clippy checks before every commit
 git config core.hooksPath .githooks
+# optional, macOS: lets the hook also lint cfg(windows) code paths
+brew install mingw-w64 && rustup target add x86_64-pc-windows-gnu
 
 # run the test suite (sandboxed, never touches your real configs)
 cargo test -p crewkit-core
