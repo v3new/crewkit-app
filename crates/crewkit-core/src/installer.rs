@@ -115,8 +115,11 @@ impl Engine {
         })
     }
 
-    /// Install the kit into every detected client. Never touches entries
-    /// the user configured; safe to run repeatedly. Reports every step,
+    /// Install the kit into every detected client. Entries that match a
+    /// kit item — same id, or an MCP entry pointing at the same endpoint
+    /// under any id — are adopted: replaced with CrewKit's own shape,
+    /// with the original config snapshotted first. Unrelated user entries
+    /// are never touched; safe to run repeatedly. Reports every step,
     /// including the ones it skipped and why.
     pub fn install(&self, progress: impl FnMut(&StepReport)) -> Result<InstallReport> {
         self.install_scoped(&InstallScope::everything(), progress)
@@ -299,6 +302,45 @@ impl Engine {
             Some(claude_cli) if scope.wants_client("claude-code") => {
                 // The CLI requires its config directory to exist.
                 let _ = std::fs::create_dir_all(&self.paths.claude_config_dir);
+                // Adopt a marketplace registration under our name that points
+                // somewhere else (the user added the kit's source by hand, or
+                // the staging path moved): re-point it at the staged copy so
+                // the kit's plugins are managed from here on.
+                if plugins_pass {
+                    let registered_at = fsops::read_json(
+                        &self
+                            .paths
+                            .claude_config_dir
+                            .join("plugins/known_marketplaces.json"),
+                    )
+                    .unwrap_or_default()
+                    .and_then(|known| {
+                        let entry = known.get(&self.kit.marketplace_name)?;
+                        entry
+                            .get("installLocation")
+                            .or_else(|| entry.get("source").and_then(|s| s.get("path")))
+                            .and_then(|v| v.as_str())
+                            .map(PathBuf::from)
+                    });
+                    let elsewhere =
+                        registered_at.is_some_and(|p| canonical(&p) != canonical(&marketplace_dir));
+                    if elsewhere {
+                        run_cli_step(
+                            &claude_cli,
+                            &[
+                                "plugin",
+                                "marketplace",
+                                "remove",
+                                &self.kit.marketplace_name,
+                            ],
+                            &env,
+                            &format!("Adopt marketplace {}", self.kit.marketplace_name),
+                            "claude-code",
+                            &mut push,
+                            &mut steps,
+                        );
+                    }
+                }
                 let registered = plugins_pass
                     && run_cli_step(
                         &claude_cli,
@@ -364,16 +406,16 @@ impl Engine {
                     }
                 }
                 // MCP entries point at crewkit-bridge (stdio); entries from
-                // older CrewKit versions (remote HTTP shape) are migrated.
-                let user_servers =
-                    fsops::read_json(&self.paths.claude_config_dir.join(".claude.json"))
-                        .unwrap_or_default()
-                        .and_then(|config| config.get("mcpServers").cloned());
+                // older CrewKit versions (remote HTTP shape) are migrated and
+                // user-added entries for the same server are adopted.
+                let claude_json = self.paths.claude_config_dir.join(".claude.json");
+                let user_servers = fsops::read_json(&claude_json)
+                    .unwrap_or_default()
+                    .and_then(|config| config.get("mcpServers").cloned());
                 for server in wanted_servers.iter().copied() {
                     if !bridge_ok {
                         break;
                     }
-                    let step_name = format!("Add MCP server {}", server.id);
                     let existing = user_servers.as_ref().and_then(|s| s.get(&server.id));
                     let is_bridge_shaped = existing.is_some_and(|e| {
                         bridge::is_bridge_command(e.get("command").and_then(|c| c.as_str()))
@@ -382,6 +424,25 @@ impl Engine {
                         .mcp_servers
                         .contains(&ManagedState::key("claude-code", &server.id));
 
+                    // Adopt user entries under other ids that point at this
+                    // server's endpoint — with the bridge entry in place they
+                    // would connect the same server twice.
+                    for dup in
+                        mcp::json_servers_targeting(user_servers.as_ref(), &server.url, &server.id)
+                    {
+                        let _ = snap.backup(&claude_json);
+                        let ok = run_cli_step(
+                            &claude_cli,
+                            &["mcp", "remove", "--scope", "user", &dup],
+                            &env,
+                            &format!("Adopt MCP server {} (drop duplicate `{dup}`)", server.id),
+                            "claude-code",
+                            &mut push,
+                            &mut steps,
+                        );
+                        claude_changed |= ok;
+                    }
+
                     if is_bridge_shaped {
                         push(
                             skip("Add MCP server", "claude-code", &server.id),
@@ -389,15 +450,17 @@ impl Engine {
                         );
                         continue;
                     }
-                    if existing.is_some() && !state_managed {
-                        push(
-                            skip_foreign("Add MCP server", "claude-code", &server.id),
-                            &mut steps,
-                        );
-                        continue;
-                    }
+                    let adopting = existing.is_some() && !state_managed;
+                    let step_name = if adopting {
+                        format!("Adopt MCP server {}", server.id)
+                    } else {
+                        format!("Add MCP server {}", server.id)
+                    };
                     if existing.is_some() {
-                        // Ours in the old shape: drop it, then add the bridge entry.
+                        // Replace in place — ours in the old remote shape, or
+                        // a user entry being adopted (the snapshot keeps the
+                        // original): drop it, then add the bridge entry.
+                        let _ = snap.backup(&claude_json);
                         let _ = cli::run(
                             &claude_cli,
                             &["mcp", "remove", "--scope", "user", &server.id],
@@ -557,6 +620,30 @@ impl Engine {
                         .mcp_servers
                         .contains(&ManagedState::key("codex", &server.id));
                     let step_name = format!("Add MCP server {}", server.id);
+                    match mcp::adopt_codex_url_duplicates(
+                        &config_toml,
+                        &server.url,
+                        &server.id,
+                        &mut snap,
+                    ) {
+                        Ok(dups) => {
+                            for dup in dups {
+                                codex_changed = true;
+                                push(
+                                    ok_step(
+                                        &format!(
+                                            "Adopt MCP server {} (drop duplicate `{dup}`)",
+                                            server.id
+                                        ),
+                                        "codex",
+                                        "same endpoint — now served by the CrewKit entry",
+                                    ),
+                                    &mut steps,
+                                );
+                            }
+                        }
+                        Err(e) => push(failed(&step_name, "codex", &e.to_string()), &mut steps),
+                    }
                     match mcp::ensure_codex_server(
                         &config_toml,
                         &server.id,
@@ -565,14 +652,15 @@ impl Engine {
                         &mut snap,
                     ) {
                         Ok(outcome) => {
-                            if matches!(outcome, Outcome::Installed | Outcome::Updated) {
+                            if matches!(
+                                outcome,
+                                Outcome::Installed | Outcome::Updated | Outcome::Adopted
+                            ) {
                                 codex_changed = true;
                             }
-                            if outcome != Outcome::SkippedForeign {
-                                state
-                                    .mcp_servers
-                                    .insert(ManagedState::key("codex", &server.id));
-                            }
+                            state
+                                .mcp_servers
+                                .insert(ManagedState::key("codex", &server.id));
                             push(outcome_step(&step_name, "codex", outcome), &mut steps);
                         }
                         Err(e) => push(
@@ -620,6 +708,33 @@ impl Engine {
                     .contains(&ManagedState::key("claude-desktop", &server.id));
                 let desired = bridge::stdio_entry(&bridge_bin, &server.id);
                 let step_name = format!("Add MCP server {}", server.id);
+                match mcp::adopt_json_url_duplicates(
+                    &desktop_config,
+                    &server.url,
+                    &server.id,
+                    &mut snap,
+                ) {
+                    Ok(dups) => {
+                        for dup in dups {
+                            desktop_changed = true;
+                            push(
+                                ok_step(
+                                    &format!(
+                                        "Adopt MCP server {} (drop duplicate `{dup}`)",
+                                        server.id
+                                    ),
+                                    "claude-desktop",
+                                    "same endpoint — now served by the CrewKit entry",
+                                ),
+                                &mut steps,
+                            );
+                        }
+                    }
+                    Err(e) => push(
+                        failed(&step_name, "claude-desktop", &e.to_string()),
+                        &mut steps,
+                    ),
+                }
                 match mcp::ensure_json_server(
                     &desktop_config,
                     &server.id,
@@ -628,14 +743,15 @@ impl Engine {
                     &mut snap,
                 ) {
                     Ok(outcome) => {
-                        if matches!(outcome, Outcome::Installed | Outcome::Updated) {
+                        if matches!(
+                            outcome,
+                            Outcome::Installed | Outcome::Updated | Outcome::Adopted
+                        ) {
                             desktop_changed = true;
                         }
-                        if outcome != Outcome::SkippedForeign {
-                            state
-                                .mcp_servers
-                                .insert(ManagedState::key("claude-desktop", &server.id));
-                        }
+                        state
+                            .mcp_servers
+                            .insert(ManagedState::key("claude-desktop", &server.id));
                         push(
                             outcome_step(&step_name, "claude-desktop", outcome),
                             &mut steps,
@@ -1017,6 +1133,11 @@ impl Engine {
     }
 }
 
+/// Canonical form for path comparison; unresolvable paths compare as-is.
+fn canonical(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The version the staged marketplace would install for a plugin.
 fn staged_plugin_version(marketplace_dir: &std::path::Path, name: &str) -> Option<String> {
     fsops::read_json(
@@ -1116,9 +1237,9 @@ fn outcome_step(step: &str, client: &str, outcome: Outcome) -> StepReport {
         Outcome::Installed => (StepStatus::Ok, "installed".to_string()),
         Outcome::Updated => (StepStatus::Ok, "updated".to_string()),
         Outcome::AlreadyInstalled => (StepStatus::Skipped, "already installed".to_string()),
-        Outcome::SkippedForeign => (
-            StepStatus::Skipped,
-            "an entry with this id exists but is not managed by CrewKit — left untouched"
+        Outcome::Adopted => (
+            StepStatus::Ok,
+            "adopted — the entry added outside CrewKit was replaced and is now managed by CrewKit"
                 .to_string(),
         ),
     };

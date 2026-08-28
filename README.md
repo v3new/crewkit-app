@@ -80,7 +80,7 @@ unrecognized host keys surface as partial-support notes in the install log, and
 
 ## Hard rules of the installer
 
-1. **Merge, never overwrite.** CrewKit creates and updates only its own entries (marked `"_managedBy": "crewkit"` where the format allows, tracked in CrewKit's own state file otherwise). Entries the user configured by hand are never touched.
+1. **Merge, don't clobber — but own the kit's items.** CrewKit creates and updates its own entries (marked `"_managedBy": "crewkit"` where the format allows, tracked in CrewKit's own state file otherwise). A hand-added entry that matches a kit item — same id, or an MCP entry pointing at the same endpoint under any name — is **adopted on install**: replaced with the CrewKit bridge entry (snapshot taken first) and managed from then on. Entries unrelated to the kit are never touched, and removal only ever removes what CrewKit manages.
 2. **Atomic writes.** Temp file + rename; a client can never observe a half-written config.
 3. **Snapshot before every write** of every touched file, for manual rollback.
 4. **Idempotent.** Reinstalling updates or skips — never duplicates: when the kit ships a

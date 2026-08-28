@@ -548,6 +548,10 @@ button.chip--ok:hover {
   color: var(--warn);
 }
 
+button.chip--warn:hover {
+  border-color: var(--warn);
+}
+
 .chip--off {
   background: var(--hairline-soft);
   border-color: var(--hairline);

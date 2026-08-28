@@ -14,7 +14,9 @@ use crate::state::ManagedState;
 pub enum Status {
     /// Installed and owned by CrewKit.
     Installed,
-    /// An entry with this id exists but the user configured it — CrewKit will not touch it.
+    /// An entry for this item exists (same id, or an MCP entry pointing
+    /// at the same endpoint) but was added outside CrewKit — installing
+    /// adopts it: CrewKit replaces it with its own entry and manages it.
     InstalledForeign,
     NotInstalled,
     /// The target client is not present on this machine.
@@ -200,8 +202,9 @@ pub fn inventory(
         });
     }
     for server in kit.active_mcp_servers() {
-        let status = if !present("codex") {
-            Status::ClientUnavailable
+        let default_detail = "crewkit-bridge (stdio) in codex config.toml".to_string();
+        let (status, detail) = if !present("codex") {
+            (Status::ClientUnavailable, default_detail)
         } else {
             match codex_doc
                 .as_ref()
@@ -217,12 +220,19 @@ pub fn inventory(
                             .mcp_servers
                             .contains(&ManagedState::key("codex", &server.id));
                     if ours {
-                        Status::Installed
+                        (Status::Installed, default_detail)
                     } else {
-                        Status::InstalledForeign
+                        (Status::InstalledForeign, foreign_detail(&server.id))
                     }
                 }
-                None => Status::NotInstalled,
+                None => match codex_doc
+                    .as_ref()
+                    .map(|d| crate::mcp::codex_servers_targeting(d, &server.url, &server.id))
+                    .and_then(|dups| dups.into_iter().next())
+                {
+                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
+                    None => (Status::NotInstalled, default_detail),
+                },
             }
         };
         items.push(ItemState {
@@ -230,7 +240,7 @@ pub fn inventory(
             id: server.id.clone(),
             client: "codex".into(),
             status,
-            detail: "crewkit-bridge (stdio) in codex config.toml".into(),
+            detail,
             version: None,
             updated_at_ms: None,
         });
@@ -238,15 +248,13 @@ pub fn inventory(
 
     // --- Claude Code MCP servers: user scope in .claude.json ---
     let claude_user_config = fsops::read_json(&paths.claude_config_dir.join(".claude.json"))?;
+    let claude_servers = claude_user_config.as_ref().and_then(|c| c.get("mcpServers"));
     for server in kit.active_mcp_servers() {
-        let status = if !present("claude-code") {
-            Status::ClientUnavailable
+        let default_detail = "crewkit-bridge (stdio) at user scope in .claude.json".to_string();
+        let (status, detail) = if !present("claude-code") {
+            (Status::ClientUnavailable, default_detail)
         } else {
-            match claude_user_config
-                .as_ref()
-                .and_then(|c| c.get("mcpServers"))
-                .and_then(|m| m.get(&server.id))
-            {
+            match claude_servers.and_then(|m| m.get(&server.id)) {
                 Some(entry) => {
                     let bridge_shaped = crate::bridge::is_bridge_command(
                         entry.get("command").and_then(|c| c.as_str()),
@@ -256,12 +264,22 @@ pub fn inventory(
                             .mcp_servers
                             .contains(&ManagedState::key("claude-code", &server.id));
                     if ours {
-                        Status::Installed
+                        (Status::Installed, default_detail)
                     } else {
-                        Status::InstalledForeign
+                        (Status::InstalledForeign, foreign_detail(&server.id))
                     }
                 }
-                None => Status::NotInstalled,
+                None => match crate::mcp::json_servers_targeting(
+                    claude_servers,
+                    &server.url,
+                    &server.id,
+                )
+                .into_iter()
+                .next()
+                {
+                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
+                    None => (Status::NotInstalled, default_detail),
+                },
             }
         };
         items.push(ItemState {
@@ -269,7 +287,7 @@ pub fn inventory(
             id: server.id.clone(),
             client: "claude-code".into(),
             status,
-            detail: "crewkit-bridge (stdio) at user scope in .claude.json".into(),
+            detail,
             version: None,
             updated_at_ms: None,
         });
@@ -281,15 +299,13 @@ pub fn inventory(
     // by the bridge shape plus CrewKit's state.
     let desktop_config =
         fsops::read_json(&paths.app_support.join("Claude/claude_desktop_config.json"))?;
+    let desktop_servers = desktop_config.as_ref().and_then(|c| c.get("mcpServers"));
     for server in kit.active_mcp_servers() {
-        let status = if !present("claude-desktop") {
-            Status::ClientUnavailable
+        let default_detail = "crewkit-bridge (stdio) in claude_desktop_config.json".to_string();
+        let (status, detail) = if !present("claude-desktop") {
+            (Status::ClientUnavailable, default_detail)
         } else {
-            match desktop_config
-                .as_ref()
-                .and_then(|c| c.get("mcpServers"))
-                .and_then(|m| m.get(&server.id))
-            {
+            match desktop_servers.and_then(|m| m.get(&server.id)) {
                 Some(entry) => {
                     let bridge_shaped = crate::bridge::is_bridge_command(
                         entry.get("command").and_then(|c| c.as_str()),
@@ -299,12 +315,22 @@ pub fn inventory(
                             .mcp_servers
                             .contains(&ManagedState::key("claude-desktop", &server.id));
                     if ours {
-                        Status::Installed
+                        (Status::Installed, default_detail)
                     } else {
-                        Status::InstalledForeign
+                        (Status::InstalledForeign, foreign_detail(&server.id))
                     }
                 }
-                None => Status::NotInstalled,
+                None => match crate::mcp::json_servers_targeting(
+                    desktop_servers,
+                    &server.url,
+                    &server.id,
+                )
+                .into_iter()
+                .next()
+                {
+                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
+                    None => (Status::NotInstalled, default_detail),
+                },
             }
         };
         items.push(ItemState {
@@ -312,11 +338,16 @@ pub fn inventory(
             id: server.id.clone(),
             client: "claude-desktop".into(),
             status,
-            detail: "crewkit-bridge (stdio) in claude_desktop_config.json".into(),
+            detail,
             version: None,
             updated_at_ms: None,
         });
     }
 
     Ok(items)
+}
+
+/// Detail line for an entry added outside CrewKit that installing adopts.
+fn foreign_detail(entry_id: &str) -> String {
+    format!("`{entry_id}` was added outside CrewKit — installing takes over management")
 }

@@ -43,6 +43,22 @@ fn full_install_roundtrip_in_sandbox() {
 
     let (kit, zips_dir) = synth_kit(tmp.path());
 
+    // Pre-seed hand-added MCP entries the install must adopt: one under
+    // the kit id (Claude, remote shape) and one under a different id
+    // pointing at the kit's endpoint (Codex).
+    std::fs::create_dir_all(&paths.claude_config_dir).unwrap();
+    std::fs::write(
+        paths.claude_config_dir.join(".claude.json"),
+        r#"{"mcpServers": {"test-mcp": {"type": "http", "url": "https://mcp.example.dev/mcp"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(&paths.codex_home).unwrap();
+    std::fs::write(
+        paths.codex_home.join("config.toml"),
+        "[mcp_servers.hand-added]\nurl = \"https://mcp.example.dev/mcp\"\n",
+    )
+    .unwrap();
+
     // A stand-in bridge binary is enough: install only deploys and
     // references it — clients launch it later, outside this test.
     let bridge_source = tmp.path().join("bridge-source");
@@ -73,6 +89,44 @@ fn full_install_roundtrip_in_sandbox() {
         report.steps
     );
 
+    // The hand-added entries were adopted, not skipped: the Claude entry
+    // is bridge-shaped now, and the Codex duplicate under its own id is gone.
+    // Gate on what the installer itself requires: a usable CLI.
+    let has_cli = |id: &str| {
+        report
+            .scan
+            .clients
+            .iter()
+            .any(|c| c.id == id && c.cli_path.is_some())
+    };
+    if has_cli("claude-code") {
+        let claude_json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(paths.claude_config_dir.join(".claude.json")).unwrap(),
+        )
+        .unwrap();
+        let cmd = claude_json["mcpServers"]["test-mcp"]["command"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            cmd.ends_with("crewkit-bridge"),
+            "hand-added Claude entry must be adopted into the bridge shape, got: {claude_json}"
+        );
+    }
+    if has_cli("codex") {
+        let toml = std::fs::read_to_string(paths.codex_home.join("config.toml")).unwrap();
+        assert!(
+            !toml.contains("hand-added"),
+            "same-endpoint duplicate must be adopted (removed): {toml}"
+        );
+        // The codex CLI may normalize mcp_servers to inline form — check
+        // the parsed value, not the rendering.
+        let doc: toml_edit::DocumentMut = toml.parse().unwrap();
+        let cmd = doc["mcp_servers"]["test-mcp"]["command"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(cmd.ends_with("crewkit-bridge"), "{toml}");
+    }
+
     // Second run must be a no-op: everything already installed or skipped.
     let second = engine.install(|_| {}).unwrap();
     assert!(
@@ -81,10 +135,15 @@ fn full_install_roundtrip_in_sandbox() {
         second.steps
     );
     for item in &second.scan.items {
+        // A client without a usable CLI can't have its seeded entry
+        // adopted — only clients the installer actually reached count.
+        if item.client == "claude-code" && !has_cli("claude-code") {
+            continue;
+        }
         assert_ne!(
             item.status,
             Status::InstalledForeign,
-            "nothing should be foreign in a fresh sandbox: {item:?}"
+            "nothing should stay foreign after install (adoption): {item:?}"
         );
     }
     eprintln!("--- final inventory ---");

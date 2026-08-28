@@ -110,7 +110,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     serversAuthorized: "authorized",
     noClients: "No supported clients found",
     installed: "Installed",
-    notManaged: "Not managed",
+    adopt: "Take over",
+    adoptHint: "Added outside CrewKit — click to take over management",
     notInstalled: "Not installed",
     authorized: "authorized",
     authorize: "Authorize",
@@ -173,7 +174,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     serversAuthorized: "авторизовано",
     noClients: "Клиенты не найдены",
     installed: "Установлено",
-    notManaged: "Не наш",
+    adopt: "Взять на себя",
+    adoptHint: "Добавлено вне CrewKit — нажмите, чтобы CrewKit взял управление на себя",
     notInstalled: "Не установлено",
     authorized: "авторизован",
     authorize: "Авторизовать",
@@ -236,7 +238,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     serversAuthorized: "autorizados",
     noClients: "No se encontraron clientes compatibles",
     installed: "Instalado",
-    notManaged: "No gestionado",
+    adopt: "Gestionar",
+    adoptHint: "Añadido fuera de CrewKit — haz clic para que CrewKit lo gestione",
     notInstalled: "No instalado",
     authorized: "autorizado",
     authorize: "Autorizar",
@@ -299,7 +302,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     serversAuthorized: "已授权",
     noClients: "未找到支持的客户端",
     installed: "已安装",
-    notManaged: "非托管",
+    adopt: "接管",
+    adoptHint: "在 CrewKit 之外添加 — 点击由 CrewKit 接管",
     notInstalled: "未安装",
     authorized: "已授权",
     authorize: "授权",
@@ -532,7 +536,8 @@ function cellButton(card: KitCard, scan: ScanReport, kind: string, id: string, c
     chip = `<button class="chip chip--install cell-act" data-arg="${esc(key)}">${t("installShort")}</button>`;
     hint = `<div class="tip-action">${esc(t("installToApp").replace("{app}", col.label))}</div>`;
   } else if (status === "installed-foreign") {
-    chip = `<span class="chip chip--warn">${t("notManaged")}</span>`;
+    chip = `<button class="chip chip--warn cell-act" data-arg="${esc(key)}">${t("adopt")}</button>`;
+    hint = `<div class="tip-action">${esc(t("adoptHint"))}</div>`;
   } else {
     return `<span class="na">—</span>`;
   }
@@ -1158,7 +1163,8 @@ async function cellAction(arg: string): Promise<void> {
     }
     confirming.delete(arg);
     await applyScoped("remove", kitId, col.targets, [{ kind, id }], arg);
-  } else if (status === "not-installed") {
+  } else if (status === "not-installed" || status === "installed-foreign") {
+    // Foreign = added outside CrewKit; installing adopts the entry.
     await applyScoped("install", kitId, col.targets, [{ kind, id }], arg);
   }
 }

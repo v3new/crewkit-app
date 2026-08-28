@@ -110,7 +110,7 @@ fn bridge_deploys_with_server_map() {
 }
 
 #[test]
-fn codex_mcp_merge_is_idempotent_and_preserves_user_config() {
+fn codex_mcp_merge_is_idempotent_and_adopts_kit_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = Paths::rooted(tmp.path());
     let config = paths.codex_home.join("config.toml");
@@ -134,10 +134,22 @@ fn codex_mcp_merge_is_idempotent_and_preserves_user_config() {
         Outcome::AlreadyInstalled
     );
 
-    // Never touch an entry the user created themselves.
+    // Installing a kit server never touches unrelated user entries.
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains("# user's own config"),
+        "user comments preserved"
+    );
+    assert!(text.contains("model = \"o3\""), "user settings preserved");
+    assert!(
+        text.contains("https://example.com/mcp"),
+        "unrelated user MCP entry preserved"
+    );
+
+    // A user entry under a kit item's id is adopted, not skipped.
     assert_eq!(
         ensure_codex_server(&config, "my-server", &bridge, false, &mut snap).unwrap(),
-        Outcome::SkippedForeign
+        Outcome::Adopted
     );
 
     // A marked entry in the old remote shape migrates to the bridge shape.
@@ -147,14 +159,11 @@ fn codex_mcp_merge_is_idempotent_and_preserves_user_config() {
     );
 
     let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("# user's own config"));
+    assert!(text.contains("model = \"o3\""));
     assert!(
-        text.contains("# user's own config"),
-        "user comments preserved"
-    );
-    assert!(text.contains("model = \"o3\""), "user settings preserved");
-    assert!(
-        text.contains("https://example.com/mcp"),
-        "user MCP entry preserved"
+        !text.contains("https://example.com/mcp"),
+        "adopted entry now launches the bridge instead of the raw URL"
     );
     assert!(text.contains("_managedBy = \"crewkit\""));
     assert!(
@@ -164,7 +173,55 @@ fn codex_mcp_merge_is_idempotent_and_preserves_user_config() {
 }
 
 #[test]
-fn json_mcp_merge_is_idempotent_and_preserves_user_config() {
+fn codex_url_duplicates_are_adopted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+    let config = paths.codex_home.join("config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // The user added the kit's endpoint by hand under their own names —
+    // once as a remote URL entry (trailing slash and all), once through
+    // an mcp-remote wrapper — plus one unrelated server.
+    std::fs::write(
+        &config,
+        concat!(
+            "[mcp_servers.my-kit-server]\nurl = \"https://mcp.example.dev/mcp/\"\n\n",
+            "[mcp_servers.wrapped]\ncommand = \"npx\"\nargs = [\"mcp-remote\", \"https://mcp.example.dev/mcp\"]\n\n",
+            "[mcp_servers.other]\nurl = \"https://unrelated.example.com/mcp\"\n",
+        ),
+    )
+    .unwrap();
+    let mut snap = Snapshotter::new(&paths.crewkit_dir());
+
+    let removed = crewkit_core::mcp::adopt_codex_url_duplicates(
+        &config,
+        "https://mcp.example.dev/mcp",
+        "test-mcp",
+        &mut snap,
+    )
+    .unwrap();
+    assert_eq!(removed, vec!["my-kit-server", "wrapped"]);
+
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("my-kit-server"));
+    assert!(!text.contains("wrapped"));
+    assert!(
+        text.contains("https://unrelated.example.com/mcp"),
+        "unrelated entries stay"
+    );
+
+    // Idempotent: a second sweep finds nothing.
+    let removed = crewkit_core::mcp::adopt_codex_url_duplicates(
+        &config,
+        "https://mcp.example.dev/mcp",
+        "test-mcp",
+        &mut snap,
+    )
+    .unwrap();
+    assert!(removed.is_empty());
+}
+
+#[test]
+fn json_mcp_merge_is_idempotent_and_adopts_kit_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = Paths::rooted(tmp.path());
     let config = paths.app_support.join("Claude/claude_desktop_config.json");
@@ -191,13 +248,19 @@ fn json_mcp_merge_is_idempotent_and_preserves_user_config() {
         Outcome::AlreadyInstalled
     );
 
-    // An entry CrewKit does not own is never touched...
+    // Installing a kit server never touches unrelated user entries...
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(value["preferences"]["theme"], "dark");
+    assert_eq!(value["mcpServers"]["mine"]["command"], "npx");
+
+    // ...a user entry under a kit item's id is adopted...
     let other = stdio_entry(&bridge, "mine");
     assert_eq!(
         ensure_json_server(&config, "mine", &other, false, &mut snap).unwrap(),
-        Outcome::SkippedForeign
+        Outcome::Adopted
     );
-    // ...but a state-owned entry is updated in place.
+    // ...and a state-owned entry is updated in place.
     let moved = stdio_entry(Path::new("/fake/other/crewkit-bridge"), "test-mcp");
     assert_eq!(
         ensure_json_server(&config, "test-mcp", &moved, true, &mut snap).unwrap(),
@@ -207,11 +270,48 @@ fn json_mcp_merge_is_idempotent_and_preserves_user_config() {
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
     assert_eq!(value["preferences"]["theme"], "dark");
-    assert_eq!(value["mcpServers"]["mine"]["command"], "npx");
+    assert_eq!(
+        value["mcpServers"]["mine"]["command"],
+        "/fake/CrewKit/bin/crewkit-bridge",
+        "adopted entry now launches the bridge"
+    );
     assert_eq!(
         value["mcpServers"]["test-mcp"]["command"],
         "/fake/other/crewkit-bridge"
     );
+}
+
+#[test]
+fn json_url_duplicates_are_adopted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+    let config = paths.app_support.join("Claude/claude_desktop_config.json");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // Claude Desktop is stdio-only: a hand-added remote server shows up
+    // as an mcp-remote wrapper carrying the URL in its args.
+    std::fs::write(
+        &config,
+        r#"{"mcpServers": {
+            "my-kit-server": {"command": "npx", "args": ["mcp-remote", "https://mcp.example.dev/mcp"]},
+            "other": {"command": "npx", "args": ["mcp-remote", "https://unrelated.example.com/mcp"]}
+        }}"#,
+    )
+    .unwrap();
+    let mut snap = Snapshotter::new(&paths.crewkit_dir());
+
+    let removed = crewkit_core::mcp::adopt_json_url_duplicates(
+        &config,
+        "https://mcp.example.dev/mcp",
+        "test-mcp",
+        &mut snap,
+    )
+    .unwrap();
+    assert_eq!(removed, vec!["my-kit-server"]);
+
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert!(value["mcpServers"].get("my-kit-server").is_none());
+    assert!(value["mcpServers"].get("other").is_some(), "unrelated stays");
 }
 
 #[test]
