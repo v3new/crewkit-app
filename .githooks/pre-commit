@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-commit: run the same checks as CI's lint job so a commit that
+# would fail CI never leaves the machine. Skip once with --no-verify.
+#
+# Enable after cloning:  git config core.hooksPath .githooks
+set -e
+
+echo "pre-commit: cargo fmt --all --check"
+cargo fmt --all --check || {
+    echo ""
+    echo "pre-commit: formatting is off — run 'cargo fmt --all' and re-stage."
+    exit 1
+}
+
+echo "pre-commit: cargo clippy (same flags as CI)"
+cargo clippy -p crewkit-core -p crewkit-bridge -p crewkit-cli --all-targets -- -D warnings

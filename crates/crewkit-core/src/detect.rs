@@ -149,6 +149,32 @@ fn version_token(text: &str) -> Option<(Vec<u64>, String)> {
     None
 }
 
+fn find_on_path(names: &[String]) -> Option<PathBuf> {
+    // On Windows executables carry an extension (claude.exe from the
+    // native installer, claude.cmd from an npm shim) — probe those too.
+    #[cfg(windows)]
+    const EXTENSIONS: &[&str] = &["exe", "cmd", "bat"];
+    #[cfg(not(windows))]
+    const EXTENSIONS: &[&str] = &[];
+
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            for ext in EXTENSIONS {
+                let candidate = dir.join(format!("{name}.{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,30 +228,4 @@ mod tests {
         assert_eq!(best, Some(path));
         assert_eq!(version, None);
     }
-}
-
-fn find_on_path(names: &[String]) -> Option<PathBuf> {
-    // On Windows executables carry an extension (claude.exe from the
-    // native installer, claude.cmd from an npm shim) — probe those too.
-    #[cfg(windows)]
-    const EXTENSIONS: &[&str] = &["exe", "cmd", "bat"];
-    #[cfg(not(windows))]
-    const EXTENSIONS: &[&str] = &[];
-
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        for name in names {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            for ext in EXTENSIONS {
-                let candidate = dir.join(format!("{name}.{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
 }

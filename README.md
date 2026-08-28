@@ -108,6 +108,9 @@ docs/                  Kit spec (CC-BY), spike findings
 Prerequisites: Rust (stable), Node 20+.
 
 ```bash
+# one-time after cloning: run CI's fmt + clippy checks before every commit
+git config core.hooksPath .githooks
+
 # run the test suite (sandboxed, never touches your real configs)
 cargo test -p crewkit-core
 
