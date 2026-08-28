@@ -16,10 +16,10 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Frontend dependencies
@@ -37,7 +37,7 @@ jobs:
           cp target/release/bundle/macos/CrewKit.app.tar.gz upload/
           cp target/release/bundle/macos/CrewKit.app.tar.gz.sig upload/
           cp target/release/bundle/dmg/CrewKit_*_aarch64.dmg upload/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundle-macos
           if-no-files-found: error
@@ -46,10 +46,10 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Frontend dependencies
@@ -67,7 +67,7 @@ jobs:
           mkdir upload
           cp target/release/bundle/nsis/CrewKit_*_x64-setup.exe upload/
           cp target/release/bundle/nsis/CrewKit_*_x64-setup.exe.sig upload/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundle-windows
           if-no-files-found: error
@@ -79,7 +79,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -118,7 +118,7 @@ jobs:
           cp "dist/CrewKit_${VERSION}_aarch64.dmg" CrewKit_aarch64.dmg
           cp "dist/CrewKit_${VERSION}_x64-setup.exe" CrewKit_x64-setup.exe
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*
