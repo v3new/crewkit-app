@@ -20,6 +20,11 @@ mod proxy;
 
 use std::collections::BTreeMap;
 
+/// Product token every outbound HTTP request identifies itself with.
+/// The proxy extends it with the connected client's own token once the
+/// MCP `initialize` request has declared one.
+pub const USER_AGENT: &str = concat!("crewkit-bridge/", env!("CARGO_PKG_VERSION"));
+
 use crewkit_core::paths::Paths;
 use serde::Deserialize;
 

@@ -21,6 +21,9 @@ struct Shared {
     url: String,
     session_id: Mutex<Option<String>>,
     protocol_version: Mutex<Option<String>>,
+    /// `name/version` the client declared in `initialize.clientInfo`,
+    /// already sanitized for use inside a header value.
+    client_info: Mutex<Option<String>>,
     stdout: Mutex<std::io::Stdout>,
     listener_started: AtomicBool,
 }
@@ -32,6 +35,13 @@ impl Shared {
         let _ = stdout.write_all(b"\n");
         let _ = stdout.flush();
     }
+
+    fn user_agent(&self) -> String {
+        match self.client_info.lock().expect("client lock").as_deref() {
+            Some(client) => format!("{} {client}", crate::USER_AGENT),
+            None => crate::USER_AGENT.to_string(),
+        }
+    }
 }
 
 pub fn serve(paths: &Paths, server_id: &str, url: &str) -> Result<()> {
@@ -40,6 +50,7 @@ pub fn serve(paths: &Paths, server_id: &str, url: &str) -> Result<()> {
         url: url.to_string(),
         session_id: Mutex::new(None),
         protocol_version: Mutex::new(None),
+        client_info: Mutex::new(None),
         stdout: Mutex::new(std::io::stdout()),
         listener_started: AtomicBool::new(false),
     });
@@ -69,6 +80,13 @@ fn handle_message(shared: &Arc<Shared>, line: &str) {
     };
     let request_id = message.get("id").cloned();
     let is_initialize = message.get("method").and_then(|m| m.as_str()) == Some("initialize");
+    if is_initialize {
+        // The client's own product token rides along in the User-Agent,
+        // starting with the initialize request itself.
+        if let Some(client) = client_product_token(&message) {
+            *shared.client_info.lock().expect("client lock") = Some(client);
+        }
+    }
 
     // Interactive auth is allowed here: the very first client connection
     // may trigger the one browser tab (deduplicated across processes).
@@ -133,6 +151,7 @@ fn forward(
     let mut request = ureq::post(&shared.url)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json, text/event-stream")
+        .set("User-Agent", &shared.user_agent())
         .set("Authorization", &format!("Bearer {token}"));
     if let Some(session) = shared.session_id.lock().expect("session lock").clone() {
         request = request.set("Mcp-Session-Id", &session);
@@ -210,6 +229,46 @@ fn forward_sse(reader: impl Read, shared: &Shared, is_initialize: bool) {
     flush(&mut data);
 }
 
+/// `name/version` product token from `initialize.params.clientInfo`.
+/// Both halves are client-supplied free text headed into an HTTP header,
+/// so each is sanitized; a name that sanitizes away yields None.
+fn client_product_token(message: &Value) -> Option<String> {
+    let info = message.get("params")?.get("clientInfo")?;
+    let name = sanitize_token(info.get("name")?.as_str()?)?;
+    let version = info
+        .get("version")
+        .and_then(|v| v.as_str())
+        .and_then(sanitize_token);
+    Some(match version {
+        Some(version) => format!("{name}/{version}"),
+        None => name,
+    })
+}
+
+/// Reduce a client-supplied string to one header-safe product token:
+/// lowercased, runs of anything outside `[A-Za-z0-9._-]` collapse to a
+/// single `-`, capped at 64 characters. Empty results are None.
+fn sanitize_token(input: &str) -> Option<String> {
+    let mut token = String::new();
+    let mut gap = false;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+            if gap && !token.is_empty() {
+                token.push('-');
+            }
+            gap = false;
+            token.push(c.to_ascii_lowercase());
+        } else {
+            gap = true;
+        }
+        if token.len() >= 64 {
+            break;
+        }
+    }
+    let token = token.trim_matches('-').to_string();
+    (!token.is_empty()).then_some(token)
+}
+
 /// Remember the negotiated protocol version from the initialize result;
 /// later requests echo it in the MCP-Protocol-Version header.
 fn note_initialize_result(shared: &Shared, payload: &str) {
@@ -239,6 +298,7 @@ fn start_server_stream(shared: &Arc<Shared>) {
             };
             let mut request = ureq::get(&shared.url)
                 .set("Accept", "text/event-stream")
+                .set("User-Agent", &shared.user_agent())
                 .set("Authorization", &format!("Bearer {token}"));
             if let Some(session) = shared.session_id.lock().expect("session lock").clone() {
                 request = request.set("Mcp-Session-Id", &session);
@@ -258,4 +318,75 @@ fn start_server_stream(shared: &Arc<Shared>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialize(client_info: Value) -> Value {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "clientInfo": client_info },
+        })
+    }
+
+    #[test]
+    fn product_token_from_client_info() {
+        let msg = initialize(serde_json::json!({"name": "claude-code", "version": "2.1.244"}));
+        assert_eq!(
+            client_product_token(&msg).as_deref(),
+            Some("claude-code/2.1.244")
+        );
+    }
+
+    #[test]
+    fn name_without_version_stands_alone() {
+        let msg = initialize(serde_json::json!({"name": "codex"}));
+        assert_eq!(client_product_token(&msg).as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn missing_client_info_is_none() {
+        let msg =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
+        assert_eq!(client_product_token(&msg), None);
+    }
+
+    #[test]
+    fn spaces_collapse_to_hyphens_and_case_folds() {
+        assert_eq!(
+            sanitize_token("Visual Studio Code").as_deref(),
+            Some("visual-studio-code")
+        );
+    }
+
+    #[test]
+    fn header_injection_is_stripped() {
+        assert_eq!(
+            sanitize_token("evil\r\nX-Injected: 1").as_deref(),
+            Some("evil-x-injected-1")
+        );
+        assert_eq!(sanitize_token("\r\n \t"), None);
+        assert_eq!(sanitize_token(""), None);
+    }
+
+    #[test]
+    fn long_tokens_are_capped() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_token(&long).map(|t| t.len()), Some(64));
+    }
+
+    #[test]
+    fn leading_garbage_does_not_hyphenate() {
+        assert_eq!(sanitize_token("  padded  ").as_deref(), Some("padded"));
+    }
+
+    /// A version that is present but not a string (spec says string, but
+    /// clients drift) degrades to the name alone, never to a broken token.
+    #[test]
+    fn non_string_version_degrades_to_name() {
+        let msg = initialize(serde_json::json!({"name": "app", "version": 2}));
+        assert_eq!(client_product_token(&msg).as_deref(), Some("app"));
+    }
 }

@@ -26,6 +26,9 @@ type Result<T> = std::result::Result<T, String>;
 fn http() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
+        // Auth is one shared session for all clients, so these requests
+        // carry the bridge's own token, never a client's.
+        .user_agent(crate::USER_AGENT)
         .build()
 }
 
