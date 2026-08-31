@@ -750,23 +750,77 @@ button.chip--warn:hover {
   padding: 8px 11px;
   border-radius: 7px;
   white-space: normal;
-  overflow-wrap: anywhere;
+  /* Break between words, not inside them: paths and URLs carry their own
+     `<wbr>` hints, and anything else is prose that reads better whole. */
+  overflow-wrap: break-word;
 }
 
 .tip:hover .tipbox {
   display: block;
 }
 
-/* Footer tooltips open upward so they never clip at the window edge. */
+/* The rightmost column sits against the window edge, so its tooltips
+   have to grow leftward or they get cut off. */
+.col-cell:last-child .tipbox {
+  left: auto;
+  right: 0;
+}
+
+/* Footer tooltips open upward so they never clip at the window edge.
+   They also hang off a narrow pill, which would otherwise shrink them to
+   the minimum: size to the content instead, so a path gets a full line. */
 .tip--up .tipbox {
   top: auto;
   bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: 380px;
+}
+
+.tip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.tip-label {
+  min-width: 0;
+}
+
+.tip-state {
+  flex: none;
+}
+
+.tip-state--on {
+  color: #9fd3b9;
+}
+
+.tip-state--off {
+  color: #a3a091;
+}
+
+.tip-dim {
+  color: #a3a091;
 }
 
 .tip-sub {
   color: #a3a091;
   font-size: 10px;
   margin-bottom: 4px;
+}
+
+/* A path is read by its segments, so keep it monospaced and let the
+   `<wbr>` hints land the line breaks on the separators. */
+.tip-path {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 1.45;
+  margin-top: 1px;
+}
+
+/* Default link blue is unreadable on the tooltip's dark ground. */
+.tipbox a {
+  color: #9fd3b9;
 }
 
 .tip-action {
@@ -808,19 +862,27 @@ footer {
   background: var(--card);
   border: 1px solid var(--hairline);
   border-radius: 10px;
-}
-
-.log-row {
+  /* The columns size to their content and the rows share one grid, so a
+     locale whose timestamp runs long widens the column instead of
+     spilling over the status next to it. */
   display: grid;
-  grid-template-columns: 86px 40px 96px 1fr 1.1fr;
-  gap: 8px;
-  padding: 2px 0;
+  grid-template-columns: max-content max-content minmax(0, max-content) minmax(0, 1fr) minmax(0, 1.1fr);
+  align-content: start;
+  gap: 2px 10px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 10.5px;
 }
 
+.log-row {
+  display: contents;
+}
+
 .log-time {
   color: var(--faint);
+  white-space: nowrap;
+}
+
+.log-status {
   white-space: nowrap;
 }
 
@@ -837,6 +899,7 @@ footer {
 }
 
 .log-client,
+.log-step,
 .log-message {
   color: var(--muted);
   overflow-wrap: anywhere;

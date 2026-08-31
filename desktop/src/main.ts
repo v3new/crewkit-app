@@ -486,6 +486,19 @@ function tip(content: string, body: string, cls = ""): string {
   return `<span class="tip ${cls}">${content}<span class="tipbox">${body}</span></span>`;
 }
 
+/// Paths and URLs have no spaces, so a tooltip left to itself breaks them
+/// mid-word ("…/claude-\ncode/…/MacO\nS/claude"). A `<wbr>` after every
+/// separator puts the breaks where the eye already expects them.
+function escPath(text: string): string {
+  return esc(text).replace(/[/\\]/g, "$&<wbr>");
+}
+
+/// One tooltip line: a label on the left, its verdict pinned right, so a
+/// long name wraps under itself instead of stranding the verdict alone.
+function tipRow(label: string, state: string, stateCls = ""): string {
+  return `<div class="tip-row"><span class="tip-label">${label}</span><span class="tip-state ${stateCls}">${state}</span></div>`;
+}
+
 const LOCALES: Record<string, string> = { en: "en", ru: "ru", es: "es", zh: "zh-CN" };
 
 function fmtDate(ms: number): string {
@@ -531,8 +544,10 @@ function cellButton(card: KitCard, scan: ScanReport, kind: string, id: string, c
       const meta = [s.version ? `v${s.version}` : "", s.updatedAtMs ? fmtDate(s.updatedAtMs) : ""]
         .filter(Boolean)
         .join(" · ");
-      return `<div>${esc(SURFACE_LABEL[s.client] ?? s.client)} — ${esc(s.status.replace(/-/g, " "))}${meta ? ` · ${esc(meta)}` : ""}</div>
-        <div class="tip-sub">${esc(s.detail)}</div>`;
+      return (
+        tipRow(esc(SURFACE_LABEL[s.client] ?? s.client), esc(s.status.replace(/-/g, " "))) +
+        `<div class="tip-sub">${meta ? `${esc(meta)} · ` : ""}${esc(s.detail)}</div>`
+      );
     })
     .join("");
   let chip: string;
@@ -593,8 +608,12 @@ function renderFooterStatus(): string {
       const found = g.surfaces.filter((s) => s.found);
       const detail = g.surfaces
         .map(
-          (s) => `<div>${esc(s.name)}${s.version ? ` v${esc(s.version)}` : ""} — ${s.found ? t("found") : t("notFound")}</div>
-            ${s.found && s.path ? `<div class="tip-sub">${esc(s.path)}</div>` : ""}`
+          (s) =>
+            tipRow(
+              `${esc(s.name)}${s.version ? `<span class="tip-dim"> v${esc(s.version)}</span>` : ""}`,
+              s.found ? t("found") : t("notFound"),
+              s.found ? "tip-state--on" : "tip-state--off"
+            ) + (s.found && s.path ? `<div class="tip-sub tip-path">${escPath(s.path)}</div>` : "")
         )
         .join("");
       return tip(
@@ -715,8 +734,8 @@ function renderRows(card: KitCard, scan: ScanReport): string {
           : installedAnywhere(scan, "mcp", s.id)
             ? actionLink("authorize", s.id, isBusy ? t("waitingBrowser") : t("authorize"), isBusy)
             : "";
-      const tipBody = `<div>${esc(s.id)}</div><div class="tip-sub">${esc(s.url)}</div>${
-        s.docs ? `<div class="tip-sub"><a href="${esc(s.docs)}" target="_blank">${esc(s.docs)}</a></div>` : ""
+      const tipBody = `<div>${esc(s.id)}</div><div class="tip-sub tip-path">${escPath(s.url)}</div>${
+        s.docs ? `<div class="tip-sub tip-path"><a href="${esc(s.docs)}" target="_blank">${escPath(s.docs)}</a></div>` : ""
       }`;
       return `<div class="row">
         ${selCell(kit.id, "mcp", s.id)}
@@ -908,7 +927,7 @@ function renderLogRows(): string {
         <span class="log-time">${esc(fmtTime(s.atMs))}</span>
         <span class="log-status">${s.status}</span>
         <span class="log-client">${esc(s.client)}</span>
-        <span>${esc(s.step)}</span>
+        <span class="log-step">${esc(s.step)}</span>
         <span class="log-message">${esc(s.message)}</span>
       </div>`
     )
