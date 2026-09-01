@@ -10,7 +10,9 @@ use crate::cli;
 use crate::detect::{detect_all, DetectedClient};
 use crate::error::Result;
 use crate::fsops::{self, Snapshotter};
-use crate::inventory::{claude_plugin_install, codex_plugin_install, inventory, ItemState, Status};
+use crate::inventory::{
+    claude_plugin_install, codex_plugin_install, inventory, retired_inventory, ItemState, Status,
+};
 use crate::kit::{Kit, KitPlugin, McpServer};
 use crate::marketplace;
 use crate::mcp::{self, Outcome, RemoveOutcome};
@@ -804,6 +806,11 @@ impl Engine {
         //    Only the full-kit install retires; scoped runs leave the rest
         //    of the machine alone.
         if scope.is_everything() {
+            // Retired items are absent from `pre` — that survey covers the
+            // active kit only — so read their real status separately.
+            // Looking them up in `pre` returned "not installed" for every
+            // tombstone and quietly retired nothing.
+            let retired_items = retired_inventory(&self.kit, &self.paths, &state, &clients)?;
             let mut emit = |report: StepReport| {
                 progress(&report);
                 steps.push(report);
@@ -816,8 +823,14 @@ impl Engine {
                 .cloned()
                 .collect();
             for plugin in &retired_plugins {
-                let (c, x) =
-                    self.remove_plugin_inner(plugin, &pre, &clients, &mut state, None, &mut emit);
+                let (c, x) = self.remove_plugin_inner(
+                    plugin,
+                    &retired_items,
+                    &clients,
+                    &mut state,
+                    None,
+                    &mut emit,
+                );
                 claude_changed |= c;
                 codex_changed |= x;
             }
@@ -830,7 +843,13 @@ impl Engine {
                 .collect();
             for server in &retired_servers {
                 let (c, x, d) = self.remove_mcp_inner(
-                    server, &pre, &clients, &mut state, &mut snap, None, &mut emit,
+                    server,
+                    &retired_items,
+                    &clients,
+                    &mut state,
+                    &mut snap,
+                    None,
+                    &mut emit,
                 );
                 claude_changed |= c;
                 codex_changed |= x;
