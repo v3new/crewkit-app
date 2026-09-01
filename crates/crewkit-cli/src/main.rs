@@ -10,6 +10,8 @@
 //!   crewkit rollback                 restore configs from the latest snapshot
 //!   crewkit kit keygen <name>        generate a publisher signing keypair
 //!   crewkit kit sign <manifest> <secret-key-file>   write <manifest>.sig
+//!   crewkit kit login <manifest-url>    sign in to a kit behind a login
+//!   crewkit kit logout <manifest-url>   drop that kit host's session
 //!
 //! Kit payload (skills/*.zip) and the bridge binary resolve from
 //! `--assets <dir>` / `$CREWKIT_ASSETS` / the executable's directory /
@@ -45,9 +47,11 @@ fn main() {
         ["rollback"] => rollback(),
         ["kit", "keygen", name] => keygen(name),
         ["kit", "sign", manifest, key_file] => sign(manifest, key_file),
+        ["kit", "login", url] => kit_login(url),
+        ["kit", "logout", url] => kit_logout(url),
         _ => {
             eprintln!(
-                "usage: crewkit [--assets <dir>] [--kit <manifest.json>] <scan | install | remove <plugin|mcp> <id> | authorize <id> | logout <id> | rollback | kit keygen <name> | kit sign <manifest> <secret-key-file>>"
+                "usage: crewkit [--assets <dir>] [--kit <manifest.json>] <scan | install | remove <plugin|mcp> <id> | authorize <id> | logout <id> | rollback | kit keygen <name> | kit sign <manifest> <secret-key-file> | kit login <manifest-url> | kit logout <manifest-url>>"
             );
             std::process::exit(2);
         }
@@ -57,6 +61,30 @@ fn main() {
         eprintln!("crewkit: {message}");
         std::process::exit(1);
     }
+}
+
+/// Sign in to a kit published behind a login: opens the browser and
+/// caches the session every AI client on this machine then shares.
+fn kit_login(url: &str) -> Result<(), String> {
+    let crewkit_dir = Paths::from_env().crewkit_dir();
+    crewkit_core::kits::login_to_kit(url, &crewkit_dir).map_err(|e| e.to_string())?;
+    eprintln!("crewkit: authorized `{url}`");
+    Ok(())
+}
+
+fn kit_logout(url: &str) -> Result<(), String> {
+    let crewkit_dir = Paths::from_env().crewkit_dir();
+    let existed =
+        crewkit_core::kits::logout_from_kit(url, &crewkit_dir).map_err(|e| e.to_string())?;
+    eprintln!(
+        "crewkit: {}",
+        if existed {
+            format!("logged out of `{url}`")
+        } else {
+            format!("`{url}` had no session")
+        }
+    );
+    Ok(())
 }
 
 fn take_flag(args: &mut Vec<String>, name: &str) -> Option<String> {

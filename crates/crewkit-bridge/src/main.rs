@@ -15,7 +15,6 @@
 //! Server ids resolve to URLs via `<crewkit dir>/servers.json`, written
 //! by the CrewKit installer.
 
-mod auth;
 mod proxy;
 
 use std::collections::BTreeMap;
@@ -25,6 +24,7 @@ use std::collections::BTreeMap;
 /// MCP `initialize` request has declared one.
 pub const USER_AGENT: &str = concat!("crewkit-bridge/", env!("CARGO_PKG_VERSION"));
 
+use crewkit_core::auth::AuthSession;
 use crewkit_core::paths::Paths;
 use serde::Deserialize;
 
@@ -60,12 +60,12 @@ fn main() {
         // An explicit login preempts any background one holding the lock:
         // the user asked for a browser tab now, not for a silent wait.
         [cmd, id] if cmd == "login" => resolve_url(&paths, id).and_then(|url| {
-            auth::AuthSession::new(&paths, id, &url)
+            AuthSession::for_mcp(&paths.crewkit_dir(), id, &url)
                 .interactive_login(true)
                 .map(|_| eprintln!("crewkit-bridge: authorized `{id}`"))
         }),
         [cmd, id] if cmd == "logout" => resolve_url(&paths, id).and_then(|url| {
-            auth::AuthSession::new(&paths, id, &url)
+            AuthSession::for_mcp(&paths.crewkit_dir(), id, &url)
                 .logout()
                 .map(|existed| {
                     if existed {
@@ -76,7 +76,7 @@ fn main() {
                 })
         }),
         [cmd, id] if cmd == "status" => resolve_url(&paths, id).map(|url| {
-            let authorized = auth::AuthSession::new(&paths, id, &url).has_tokens();
+            let authorized = AuthSession::for_mcp(&paths.crewkit_dir(), id, &url).has_tokens();
             println!("{}", serde_json::json!({ "authorized": authorized }));
         }),
         _ => Err("usage: crewkit-bridge [login|logout|status] <server-id>".to_string()),

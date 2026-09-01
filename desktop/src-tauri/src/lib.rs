@@ -84,9 +84,17 @@ fn pin_key(kit_id: &str, key: &Option<String>) -> Result<(), String> {
 
 /// Re-fetch a remote kit's manifest and artifacts, verify the signature
 /// against the pinned publisher key, and refresh the local cache.
-fn refresh_remote(source: &KitSource) -> Result<Kit, String> {
-    let fetched = kits::fetch_kit(&source.source, source.pinned_key.as_deref(), &crewkit_dir())
-        .map_err(|e| e.to_string())?;
+///
+/// `auth` says whether a kit behind a login may open a browser tab: yes
+/// when the user just clicked something, never on a background refresh.
+fn refresh_remote(source: &KitSource, auth: kits::Auth) -> Result<Kit, String> {
+    let fetched = kits::fetch_kit(
+        &source.source,
+        source.pinned_key.as_deref(),
+        &crewkit_dir(),
+        auth,
+    )
+    .map_err(|e| e.to_string())?;
     if fetched.kit.id != source.id {
         return Err(format!(
             "manifest id changed: expected `{}`, got `{}`",
@@ -139,6 +147,9 @@ struct KitCard {
     /// fetch, broken cache…). A degraded card is still rendered — the UI
     /// must never dead-end on a single kit's failure.
     error: Option<String>,
+    /// The kit is published behind a login and this machine has no live
+    /// session: the card offers "Sign in" instead of an error.
+    needs_auth: bool,
 }
 
 /// A minimal stand-in so a failing kit still renders as a card.
@@ -169,7 +180,7 @@ fn list_kits(app: AppHandle) -> Result<Vec<KitCard>, String> {
         let fetch_error = if cache_path(&source.id).exists() {
             None
         } else {
-            refresh_remote(&source).err()
+            refresh_remote(&source, kits::Auth::Silent).err()
         };
         let (kit, error) = match load_kit(&app, &source) {
             Ok((kit, _)) => (kit, None),
@@ -178,12 +189,20 @@ fn list_kits(app: AppHandle) -> Result<Vec<KitCard>, String> {
                 Some(fetch_error.unwrap_or(load_error)),
             ),
         };
+        // A kit behind a login that has no session yet is not broken —
+        // it is waiting for the user, and the card says so.
+        let needs_auth = source.source != "builtin"
+            && !kits::kit_is_authorized(&source.source, &crewkit_dir())
+            && error
+                .as_deref()
+                .is_some_and(|message| message.contains("sign in"));
         cards.push(KitCard {
             kit,
             source: source.source.clone(),
             channel: source.channel.clone(),
             bundle: source.bundle.clone(),
             error,
+            needs_auth,
         });
     }
     Ok(cards)
@@ -215,7 +234,7 @@ fn install_kit_blocking(
     let source = source_for(kit_id)?;
     // Refresh from the manifest URL; an unreachable server falls back to
     // the verified local cache so installs keep working offline.
-    let refresh_error = refresh_remote(&source).err();
+    let refresh_error = refresh_remote(&source, kits::Auth::Interactive).err();
     if let Some(error) = &refresh_error {
         if !cache_path(kit_id).exists() {
             return Err(error.clone());
@@ -352,7 +371,8 @@ async fn remove_items(
 async fn add_kit(app: AppHandle, url: String) -> Result<KitCard, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let dir = crewkit_dir();
-        let fetched = kits::fetch_kit(&url, None, &dir).map_err(|e| e.to_string())?;
+        let fetched = kits::fetch_kit(&url, None, &dir, kits::Auth::Interactive)
+            .map_err(|e| e.to_string())?;
         let mut reg = registry()?;
         if reg.kits.iter().any(|k| k.id == fetched.kit.id) {
             return Err(format!("kit `{}` is already added", fetched.kit.id));
@@ -390,6 +410,9 @@ async fn add_kit(app: AppHandle, url: String) -> Result<KitCard, String> {
             channel: source.channel,
             bundle: None,
             error: None,
+            // The fetch above already went through the login when one was
+            // needed, so a freshly added kit is never waiting on it.
+            needs_auth: false,
         })
     })
     .await
@@ -427,8 +450,13 @@ async fn set_channel(app: AppHandle, kit_id: String, channel: String) -> Result<
             .get(&channel)
             .ok_or_else(|| format!("kit has no `{channel}` channel"))?;
         let url = kits::resolve_url(&source.source, target);
-        let fetched =
-            kits::fetch_kit(&url, source.pinned_key.as_deref(), &dir).map_err(|e| e.to_string())?;
+        let fetched = kits::fetch_kit(
+            &url,
+            source.pinned_key.as_deref(),
+            &dir,
+            kits::Auth::Interactive,
+        )
+        .map_err(|e| e.to_string())?;
         let json = serde_json::to_string_pretty(&fetched.kit).map_err(|e| e.to_string())?;
         crewkit_core::fsops::atomic_write(&cache_path(&kit_id), json.as_bytes())
             .map_err(|e| e.to_string())?;
@@ -490,6 +518,30 @@ async fn authorize(server_id: String) -> Result<(), String> {
         // Longer than the bridge's own 300s login deadline: the bridge
         // must time out first and report properly, not die on kill().
         run_bridge(&["login", &server_id], Duration::from_secs(330))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Sign in to a kit published behind a login. Explicit: always opens the
+/// browser, even when a session is cached, because the user asked for it.
+#[tauri::command]
+async fn authorize_kit(kit_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = source_for(&kit_id)?;
+        kits::login_to_kit(&source.source, &crewkit_dir()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn deauthorize_kit(kit_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = source_for(&kit_id)?;
+        kits::logout_from_kit(&source.source, &crewkit_dir())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -619,6 +671,8 @@ pub fn run() {
             remove_items,
             authorize,
             deauthorize,
+            authorize_kit,
+            deauthorize_kit,
             check_app_update,
             install_app_update,
             load_event_log,

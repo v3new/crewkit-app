@@ -69,8 +69,16 @@ Highlights:
   the MCP server's cached session) instead of installing it. Items can also be removed
   per-item from the UI.
 
+A kit can also be **published behind a login** — an internal kit only a company's own
+people may download. The manifest, its signature and every artifact then answer 401 with
+an RFC 9728 challenge, and CrewKit runs the same browser OAuth flow it runs for MCP
+servers: one login per kit host, cached in the Keychain, refreshed silently. A background
+update check never opens a browser on its own — the kit card offers **Sign in** instead.
+The signature still says who published the kit; the login says who may download it.
+
 Publisher tooling ships in the CLI: `crewkit kit keygen <name>` and
-`crewkit kit sign <manifest> <secret-key-file>`. Users add kits via the in-app URL field
+`crewkit kit sign <manifest> <secret-key-file>`; `crewkit kit login <manifest-url>` signs
+in to a private kit from the terminal. Users add kits via the in-app URL field
 or a deep link: `crewkit://add?kit=https://crewkit.v3new.dev/kit/marketing.json`.
 
 Every staged skill passes the `skill-translate` check: frontmatter is validated against a

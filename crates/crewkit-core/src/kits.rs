@@ -7,6 +7,11 @@
 //! first add (trust on first use): a later manifest signed with a
 //! different key is rejected, so a compromised CDN cannot substitute a
 //! different publisher.
+//!
+//! A kit may also be published behind a login: the manifest, its
+//! signature and every artifact then answer 401 with the challenge that
+//! says where to authorize. The signature is orthogonal to that — it says
+//! who published the kit, the login says who may download it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +22,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::auth::AuthSession;
 use crate::error::{Error, Result};
 use crate::fsops;
 use crate::kit::Kit;
@@ -25,6 +31,86 @@ fn http() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))
         .build()
+}
+
+/// What `fetch_kit` may do when the publisher put the kit behind a login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Auth {
+    /// A person is waiting: open the browser and run the OAuth flow when
+    /// the cached session is gone.
+    Interactive,
+    /// Nobody is watching (a background update check): use a cached or
+    /// refreshable token, and report `Error::AuthRequired` instead of
+    /// making a browser tab appear out of nowhere.
+    Silent,
+}
+
+/// The token cache key for a kit host. One login per host: every kit a
+/// publisher serves from it shares the same protected resource.
+fn kit_session_id(url: &str) -> String {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let sanitized: String = host
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                // Session ids become file names on platforms without a
+                // credential store, and `:` is illegal on Windows.
+                '-'
+            }
+        })
+        .collect();
+    format!("kit-{sanitized}")
+}
+
+/// Sign in for this kit host and return a fresh bearer token.
+fn authorize(
+    crewkit_dir: &Path,
+    url: &str,
+    challenge: Option<String>,
+    auth: Auth,
+) -> Result<String> {
+    if auth == Auth::Silent {
+        return Err(Error::AuthRequired(url.to_string()));
+    }
+    AuthSession::for_resource(crewkit_dir, &kit_session_id(url), url, challenge)
+        .interactive_login(false)
+        .map(|tokens| tokens.access_token)
+        .map_err(Error::Auth)
+}
+
+/// Explicit sign-in for a kit host: always runs the browser flow, even
+/// when a session is still cached — the user asked for a new one.
+pub fn login_to_kit(url: &str, crewkit_dir: &Path) -> Result<()> {
+    // Ask the server where to authorize. A kit that answers without a
+    // token is public and has nothing to sign in to.
+    let challenge = match get_bytes(url, None) {
+        Err(Error::Unauthorized { challenge, .. }) => challenge,
+        Ok(_) => {
+            return Err(Error::Invalid(format!(
+                "{url} is public — there is nothing to sign in to"
+            )))
+        }
+        Err(error) => return Err(error),
+    };
+    AuthSession::for_resource(crewkit_dir, &kit_session_id(url), url, challenge)
+        .interactive_login(true)
+        .map(|_| ())
+        .map_err(Error::Auth)
+}
+
+/// Drop the cached session for a kit host; returns whether one existed.
+pub fn logout_from_kit(url: &str, crewkit_dir: &Path) -> Result<bool> {
+    AuthSession::for_resource(crewkit_dir, &kit_session_id(url), url, None)
+        .logout()
+        .map_err(Error::Auth)
+}
+
+/// Whether a session for this kit host is cached at all.
+pub fn kit_is_authorized(url: &str, crewkit_dir: &Path) -> bool {
+    AuthSession::for_resource(crewkit_dir, &kit_session_id(url), url, None).has_tokens()
 }
 
 // --- Registry ---
@@ -85,7 +171,16 @@ pub struct FetchedKit {
 }
 
 /// Fetch, verify and materialize a kit from a signed URL manifest.
-pub fn fetch_kit(url: &str, pinned_key: Option<&str>, crewkit_dir: &Path) -> Result<FetchedKit> {
+///
+/// `auth` decides what happens when the kit turns out to be behind a
+/// login: `Interactive` opens the browser, `Silent` reports
+/// `Error::AuthRequired` for the caller to surface as a sign-in prompt.
+pub fn fetch_kit(
+    url: &str,
+    pinned_key: Option<&str>,
+    crewkit_dir: &Path,
+    auth: Auth,
+) -> Result<FetchedKit> {
     // The spec mandates https end to end (loopback allowed for dev).
     if !(url.starts_with("https://")
         || url.starts_with("http://localhost")
@@ -96,8 +191,18 @@ pub fn fetch_kit(url: &str, pinned_key: Option<&str>, crewkit_dir: &Path) -> Res
             "kit manifest URL must use https (got `{url}`)"
         )));
     }
-    let manifest_bytes = get_bytes(url)?;
-    let signature = get_string(&format!("{url}.sig"))
+    // A public kit needs no token and never sees a 401; a private one
+    // answers with the challenge that says where to sign in.
+    let session = AuthSession::for_resource(crewkit_dir, &kit_session_id(url), url, None);
+    let mut token = session.silent_access_token();
+    let manifest_bytes = match get_bytes(url, token.as_deref()) {
+        Err(Error::Unauthorized { challenge, .. }) => {
+            token = Some(authorize(crewkit_dir, url, challenge, auth)?);
+            get_bytes(url, token.as_deref())?
+        }
+        result => result?,
+    };
+    let signature = get_string(&format!("{url}.sig"), token.as_deref())
         .map_err(|e| Error::Invalid(format!("kit manifest has no detached signature: {e}")))?;
 
     let manifest_text = std::str::from_utf8(&manifest_bytes)
@@ -132,7 +237,7 @@ pub fn fetch_kit(url: &str, pinned_key: Option<&str>, crewkit_dir: &Path) -> Res
             .map(|bytes| sha256_hex(&bytes) == artifact.sha256.to_lowercase())
             .unwrap_or(false);
         if !cached_ok {
-            let bytes = get_bytes(&resolve_url(url, &artifact.url))?;
+            let bytes = get_bytes(&resolve_url(url, &artifact.url), token.as_deref())?;
             let digest = sha256_hex(&bytes);
             if digest != artifact.sha256.to_lowercase() {
                 return Err(Error::Invalid(format!(
@@ -170,11 +275,29 @@ pub fn resolve_url(base: &str, reference: &str) -> String {
     format!("{dir}/{}", reference.trim_start_matches("./"))
 }
 
-fn get_bytes(url: &str) -> Result<Vec<u8>> {
-    let response = http()
-        .get(url)
-        .call()
-        .map_err(|e| Error::Invalid(format!("GET {url} failed: {e}")))?;
+fn get_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>> {
+    let mut request = http().get(url);
+    if let Some(token) = token {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+    let response = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(401, response)) => {
+            return Err(Error::Unauthorized {
+                url: url.to_string(),
+                challenge: response.header("WWW-Authenticate").map(String::from),
+            })
+        }
+        // 403 and friends carry an explanation written for a person —
+        // "your account is not active yet" is worth more than the code.
+        Err(ureq::Error::Status(status, response)) => {
+            let detail = explain(response);
+            return Err(Error::Invalid(format!(
+                "GET {url} failed ({status}): {detail}"
+            )));
+        }
+        Err(e) => return Err(Error::Invalid(format!("GET {url} failed: {e}"))),
+    };
     let mut bytes = Vec::new();
     use std::io::Read;
     response
@@ -185,8 +308,29 @@ fn get_bytes(url: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn get_string(url: &str) -> Result<String> {
-    let bytes = get_bytes(url)?;
+/// The server's own words for a failed request: `error_description`
+/// when it answers in OAuth's shape, otherwise the trimmed body.
+fn explain(response: ureq::Response) -> String {
+    let body = response.into_string().unwrap_or_default();
+    let described = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error_description")
+                .or_else(|| value.get("error"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+    let text = described.unwrap_or(body);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "no details".into();
+    }
+    trimmed.chars().take(300).collect()
+}
+
+fn get_string(url: &str, token: Option<&str>) -> Result<String> {
+    let bytes = get_bytes(url, token)?;
     String::from_utf8(bytes).map_err(|_| Error::Invalid(format!("{url}: not UTF-8")))
 }
 
@@ -269,4 +413,28 @@ pub fn send_install_report(kit: &Kit, crewkit_dir: &Path, report: serde_json::Va
             .build();
         let _ = agent.post(&telemetry.endpoint).send_json(payload);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kit_session_id;
+
+    #[test]
+    fn session_id_is_one_per_host_and_safe_as_a_file_name() {
+        assert_eq!(
+            kit_session_id("https://kits.example.com/kit/acme.json"),
+            "kit-kits.example.com"
+        );
+        // Every channel and artifact of a host shares the one session.
+        assert_eq!(
+            kit_session_id("https://kits.example.com/kit/skills/mail-writer-2.0.1.zip"),
+            kit_session_id("https://kits.example.com/kit/acme-beta.json")
+        );
+        // `:` is illegal in a Windows file name, and ids become file names
+        // on platforms without a credential store.
+        assert_eq!(
+            kit_session_id("http://127.0.0.1:8080/kit.json"),
+            "kit-127.0.0.1-8080"
+        );
+    }
 }

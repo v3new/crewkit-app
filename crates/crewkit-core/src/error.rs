@@ -20,6 +20,25 @@ pub enum Error {
     #[error("command timed out after {seconds}s: {command}")]
     CliTimeout { command: String, seconds: u64 },
 
+    /// The kit is published behind a login and this request carried no
+    /// usable token. `challenge` is the server's `WWW-Authenticate`, which
+    /// tells the login flow where to authorize. Internal plumbing between
+    /// the fetcher and the login step — callers see `AuthRequired`.
+    #[error("{url} requires authorization")]
+    Unauthorized {
+        url: String,
+        challenge: Option<String>,
+    },
+
+    /// A browser login is needed and the caller asked for a silent fetch
+    /// (a background update check). The UI turns this into a sign-in
+    /// prompt instead of an error.
+    #[error("{0} — sign in to continue")]
+    AuthRequired(String),
+
+    #[error("authorization failed: {0}")]
+    Auth(String),
+
     #[error("{0}")]
     Invalid(String),
 }

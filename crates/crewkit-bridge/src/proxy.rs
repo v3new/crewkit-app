@@ -12,7 +12,7 @@ use std::time::Duration;
 use crewkit_core::paths::Paths;
 use serde_json::Value;
 
-use crate::auth::AuthSession;
+use crewkit_core::auth::AuthSession;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -46,7 +46,7 @@ impl Shared {
 
 pub fn serve(paths: &Paths, server_id: &str, url: &str) -> Result<()> {
     let shared = Arc::new(Shared {
-        auth: AuthSession::new(paths, server_id, url),
+        auth: AuthSession::for_mcp(&paths.crewkit_dir(), server_id, url),
         url: url.to_string(),
         session_id: Mutex::new(None),
         protocol_version: Mutex::new(None),

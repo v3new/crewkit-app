@@ -948,6 +948,19 @@ footer {
   font-size: 12px;
 }
 
+/* Waiting for a sign-in is a normal state, not a failure: the accent
+   palette, not the red one .kit-error uses. */
+.kit-note {
+  margin: 0 16px 12px;
+  padding: 7px 12px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent-deep);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .kit-error {
   margin: 0 16px 12px;
   padding: 7px 12px;

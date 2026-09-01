@@ -450,12 +450,9 @@ dependencies = [
 name = "crewkit-bridge"
 version = "1.4.2"
 dependencies = [
- "base64 0.22.1",
  "crewkit-core",
- "rand",
  "serde",
  "serde_json",
- "sha2",
  "ureq",
 ]
 

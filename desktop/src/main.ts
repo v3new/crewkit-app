@@ -45,6 +45,8 @@ interface KitCard {
   channel: string;
   bundle: string | null;
   error: string | null;
+  /// Published behind a login, and this machine has no live session.
+  needsAuth: boolean;
 }
 
 interface DetectedClient {
@@ -144,6 +146,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     failedShort: "failed",
     retry: "Retry",
     kitUnavailable: "Kit unavailable",
+    signIn: "Sign in",
+    kitNeedsSignIn: "This kit is published for a signed-in audience — sign in to download it",
     emptyTitle: "No kits yet",
     emptyHint: "Paste a kit manifest URL from your publisher, or open a crewkit:// link.",
     mcpGroup: "MCP Servers",
@@ -210,6 +214,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     failedShort: "с ошибкой",
     retry: "Повторить",
     kitUnavailable: "Кит недоступен",
+    signIn: "Войти",
+    kitNeedsSignIn: "Кит закрыт авторизацией — войдите, чтобы скачать его",
     emptyTitle: "Пока нет китов",
     emptyHint: "Вставьте URL манифеста от вашего издателя или откройте crewkit://-ссылку.",
     mcpGroup: "MCP-серверы",
@@ -276,6 +282,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     failedShort: "con error",
     retry: "Reintentar",
     kitUnavailable: "Kit no disponible",
+    signIn: "Iniciar sesión",
+    kitNeedsSignIn: "Este kit es privado: inicia sesión para descargarlo",
     emptyTitle: "Aún no hay kits",
     emptyHint: "Pega la URL del manifiesto de tu editor o abre un enlace crewkit://.",
     mcpGroup: "Servidores MCP",
@@ -342,6 +350,8 @@ const STRINGS: Record<string, Record<string, string>> = {
     failedShort: "失败",
     retry: "重试",
     kitUnavailable: "套件不可用",
+    signIn: "登录",
+    kitNeedsSignIn: "该套件需要登录后才能下载",
     emptyTitle: "还没有套件",
     emptyHint: "粘贴发布者提供的清单 URL，或打开 crewkit:// 链接。",
     mcpGroup: "MCP 服务器",
@@ -795,17 +805,32 @@ function renderSelectionBar(): string {
 function renderKitSection(card: KitCard): string {
   const kit = card.kit;
   const cardError = card.error ?? scanErrors.get(kit.id) ?? null;
-  if (cardError) {
-    const removeKitKey = `kit ${kit.id}`;
-    const removeKit = confirming.has(removeKitKey)
-      ? actionLink("remove-kit confirm", kit.id, t("removeKitConfirm"))
-      : actionLink("remove-kit", kit.id, t("removeKit"));
+  // Both dead-end cards below offer the same escape hatch.
+  const dropKit = confirming.has(`kit ${kit.id}`)
+    ? actionLink("remove-kit confirm", kit.id, t("removeKitConfirm"))
+    : actionLink("remove-kit", kit.id, t("removeKit"));
+  // A kit waiting for a login is not broken: it gets a sign-in button,
+  // not the red box a failed fetch gets.
+  if (card.needsAuth) {
+    const waiting = busy.has(`auth:${kit.id}`);
     return `<section class="kit">
       <div class="kit-head">
         <span class="kit-name-big">${esc(kit.name)}</span>
         <span class="kit-meta">${esc(card.source)}</span>
         <span class="spacer"></span>
-        ${removeKit}
+        ${dropKit}
+        <button class="tb-btn primary kit-authorize" data-arg="${esc(kit.id)}" ${waiting ? "disabled" : ""}>${waiting ? t("waitingBrowser") : t("signIn")}</button>
+      </div>
+      <div class="kit-note">${t("kitNeedsSignIn")}</div>
+    </section>`;
+  }
+  if (cardError) {
+    return `<section class="kit">
+      <div class="kit-head">
+        <span class="kit-name-big">${esc(kit.name)}</span>
+        <span class="kit-meta">${esc(card.source)}</span>
+        <span class="spacer"></span>
+        ${dropKit}
         <button class="tb-btn primary retry-kit">${t("retry")}</button>
       </div>
       <div class="kit-error">${t("kitUnavailable")} — ${esc(cardError)}</div>
@@ -1084,6 +1109,9 @@ function render(): void {
   app.querySelectorAll<HTMLButtonElement>("button.retry-kit").forEach((b) =>
     b.addEventListener("click", () => void rescanAll())
   );
+  app.querySelectorAll<HTMLButtonElement>("button.kit-authorize").forEach((b) =>
+    b.addEventListener("click", () => void kitAuthAction(b.dataset.arg!))
+  );
   app.querySelectorAll<HTMLSelectElement>("select.channel").forEach((s) =>
     s.addEventListener("change", () => void changeChannel(s.dataset.arg!, s.value))
   );
@@ -1310,6 +1338,20 @@ async function selectionRemove(): Promise<void> {
   }
   selected.clear();
   render();
+}
+
+/// Sign in to a kit published behind a login: the browser opens, and the
+/// list refreshes once the session lands so the kit fills in.
+async function kitAuthAction(kitId: string): Promise<void> {
+  busy.add(`auth:${kitId}`);
+  render();
+  try {
+    await invoke("authorize_kit", { kitId });
+  } catch (e) {
+    logEvents({ step: `authorize kit ${kitId}`, client: "crewkit", status: "failed", message: String(e) });
+  }
+  busy.delete(`auth:${kitId}`);
+  await rescanAll();
 }
 
 async function authAction(command: "authorize" | "deauthorize", serverId: string): Promise<void> {

@@ -1,23 +1,34 @@
-//! OAuth 2.1 for remote MCP servers, owned by CrewKit instead of by each
-//! AI client: discovery (RFC 9728 / RFC 8414), dynamic client
-//! registration (RFC 7591), authorization-code + PKCE in the system
-//! browser, token refresh. Tokens are cached per server id under the
-//! CrewKit data directory (0600), so one login serves every client.
+//! OAuth 2.1 for the remote resources CrewKit talks to — MCP servers and
+//! kits published behind a login — owned by CrewKit instead of by each AI
+//! client: discovery (RFC 9728 / RFC 8414), dynamic client registration
+//! (RFC 7591), authorization-code + PKCE in the system browser, token
+//! refresh. Tokens are cached per session id in the platform credential
+//! store, so one login serves every client.
+//!
+//! Two kinds of caller, one flow:
+//! - the bridge authorizes an MCP server, and discovers the protected
+//!   resource by pinging it (`AuthSession::for_mcp`);
+//! - `kits::fetch_kit` authorizes a kit, and already holds the
+//!   `WWW-Authenticate` challenge from the 401 that sent it here
+//!   (`AuthSession::for_resource`).
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use crewkit_core::paths::Paths;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Product token every outbound authorization request identifies itself
+/// with; the proxy keeps its own for the MCP traffic it forwards.
+const USER_AGENT: &str = concat!("crewkit/", env!("CARGO_PKG_VERSION"));
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -27,8 +38,8 @@ fn http() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         // Auth is one shared session for all clients, so these requests
-        // carry the bridge's own token, never a client's.
-        .user_agent(crate::USER_AGENT)
+        // carry CrewKit's own token, never a client's.
+        .user_agent(USER_AGENT)
         .build()
 }
 
@@ -54,25 +65,54 @@ impl Tokens {
 }
 
 pub struct AuthSession {
-    server_id: String,
-    mcp_url: String,
+    session_id: String,
+    /// What we authorize against: the MCP endpoint, or — for a kit — the
+    /// URL that answered 401. Discovery replaces it with the canonical
+    /// `resource` the protected-resource metadata declares.
+    resource: String,
+    /// Whether discovery may ping the URL with an MCP `ping` to read its
+    /// `WWW-Authenticate`. Only true for MCP endpoints: a kit's challenge
+    /// already came with the 401 that sent us here.
+    probe_mcp: bool,
+    challenge: Option<String>,
     crewkit_dir: PathBuf,
     auth_dir: PathBuf,
 }
 
 impl AuthSession {
-    pub fn new(paths: &Paths, server_id: &str, mcp_url: &str) -> Self {
-        let crewkit_dir = paths.crewkit_dir();
+    /// A session for a remote MCP server, keyed by its server id.
+    pub fn for_mcp(crewkit_dir: &Path, server_id: &str, mcp_url: &str) -> Self {
+        Self::build(crewkit_dir, server_id, mcp_url, true)
+    }
+
+    /// A session for any other protected resource — today a kit behind a
+    /// login. `challenge` is the `WWW-Authenticate` header of the 401 that
+    /// made the caller authorize, so discovery needs no probe of its own.
+    pub fn for_resource(
+        crewkit_dir: &Path,
+        session_id: &str,
+        url: &str,
+        challenge: Option<String>,
+    ) -> Self {
+        let mut session = Self::build(crewkit_dir, session_id, url, false);
+        session.challenge = challenge;
+        session
+    }
+
+    fn build(crewkit_dir: &Path, session_id: &str, url: &str, probe_mcp: bool) -> Self {
+        let crewkit_dir = crewkit_dir.to_path_buf();
         Self {
-            server_id: server_id.to_string(),
-            mcp_url: mcp_url.to_string(),
+            session_id: session_id.to_string(),
+            resource: url.to_string(),
+            probe_mcp,
+            challenge: None,
             auth_dir: crewkit_dir.join("auth"),
             crewkit_dir,
         }
     }
 
     fn lock_path(&self) -> PathBuf {
-        self.auth_dir.join(format!("{}.lock", self.server_id))
+        self.auth_dir.join(format!("{}.lock", self.session_id))
     }
 
     pub fn has_tokens(&self) -> bool {
@@ -80,15 +120,15 @@ impl AuthSession {
     }
 
     // Tokens live in the platform credential store (macOS Keychain /
-    // Windows Credential Manager); see crewkit_core::bridge::session.
+    // Windows Credential Manager); see crate::bridge::session.
     fn load_tokens(&self) -> Option<Tokens> {
-        let text = crewkit_core::bridge::session::load(&self.crewkit_dir, &self.server_id)?;
+        let text = crate::bridge::session::load(&self.crewkit_dir, &self.session_id)?;
         serde_json::from_str(&text).ok()
     }
 
     fn save_tokens(&self, tokens: &Tokens) -> Result<()> {
         let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
-        crewkit_core::bridge::session::save(&self.crewkit_dir, &self.server_id, &json)
+        crate::bridge::session::save(&self.crewkit_dir, &self.session_id, &json)
             .map_err(|e| e.to_string())
     }
 
@@ -97,22 +137,28 @@ impl AuthSession {
     /// flow (deduplicated across processes — several clients starting at
     /// once must produce ONE browser tab, not one each).
     pub fn access_token(&self, interactive: bool) -> Result<String> {
-        if let Some(tokens) = self.load_tokens() {
-            if tokens.access_is_fresh() {
-                return Ok(tokens.access_token);
-            }
-            if let Ok(refreshed) = self.refresh(&tokens) {
-                self.save_tokens(&refreshed)?;
-                return Ok(refreshed.access_token);
-            }
+        if let Some(token) = self.silent_access_token() {
+            return Ok(token);
         }
         if !interactive {
             return Err(format!(
-                "not authorized; run `crewkit-bridge login {}`",
-                self.server_id
+                "not authorized for `{}` — sign in first",
+                self.session_id
             ));
         }
         self.interactive_login(false).map(|t| t.access_token)
+    }
+
+    /// A bearer token from the cache, refreshed when stale — never a
+    /// browser tab. `None` means the caller has to ask the user to sign in.
+    pub fn silent_access_token(&self) -> Option<String> {
+        let tokens = self.load_tokens()?;
+        if tokens.access_is_fresh() {
+            return Some(tokens.access_token);
+        }
+        let refreshed = self.refresh(&tokens).ok()?;
+        self.save_tokens(&refreshed).ok()?;
+        Some(refreshed.access_token)
     }
 
     /// Force-invalidate the access token (after a 401) and get a new one.
@@ -132,9 +178,9 @@ impl AuthSession {
             self.try_revoke(&tokens);
         }
         let _ = std::fs::remove_file(self.lock_path());
-        Ok(crewkit_core::bridge::session::delete(
+        Ok(crate::bridge::session::delete(
             &self.crewkit_dir,
-            &self.server_id,
+            &self.session_id,
         ))
     }
 
@@ -173,8 +219,8 @@ impl AuthSession {
             Some(_lock) => self.run_browser_flow(),
             None if preempt => {
                 eprintln!(
-                    "crewkit-bridge: a login for `{}` is already in progress elsewhere — taking over",
-                    self.server_id
+                    "crewkit: a login for `{}` is already in progress elsewhere — taking over",
+                    self.session_id
                 );
                 let _lock = FileLock::steal(self.lock_path());
                 self.run_browser_flow()
@@ -187,8 +233,8 @@ impl AuthSession {
 
     fn wait_for_other_login(&self) -> Result<Tokens> {
         eprintln!(
-            "crewkit-bridge: a login for `{}` is already in progress in another process — waiting for it",
-            self.server_id
+            "crewkit: a login for `{}` is already in progress in another process — waiting for it",
+            self.session_id
         );
         let deadline = Instant::now() + LOGIN_TIMEOUT;
         while Instant::now() < deadline {
@@ -204,6 +250,13 @@ impl AuthSession {
 
     fn run_browser_flow(&self) -> Result<Tokens> {
         let endpoints = self.discover()?;
+        // The token is bound to the resource the server declares, which is
+        // not necessarily the URL we requested (a kit manifest sits under
+        // its resource root).
+        let resource = endpoints
+            .resource
+            .clone()
+            .unwrap_or_else(|| self.resource.clone());
 
         // Bind the callback listener first so the exact redirect URI is
         // known before the client is registered.
@@ -225,15 +278,15 @@ impl AuthSession {
             urlencode(&redirect_uri),
             urlencode(&state),
             urlencode(&challenge),
-            urlencode(&self.mcp_url),
+            urlencode(&resource),
         );
         if let Some(scope) = &endpoints.scope {
             auth_url.push_str(&format!("&scope={}", urlencode(scope)));
         }
 
         eprintln!(
-            "crewkit-bridge: authorizing `{}` — opening the browser…",
-            self.server_id
+            "crewkit: authorizing `{}` — opening the browser…",
+            self.session_id
         );
         // A concurrent login (e.g. a preempting explicit one) may finish
         // while this flow waits for its own tab; comparing against the
@@ -254,14 +307,15 @@ impl AuthSession {
                 ("redirect_uri", &redirect_uri),
                 ("client_id", &client_id),
                 ("code_verifier", &verifier),
-                ("resource", &self.mcp_url),
+                ("resource", &resource),
             ])
             .map_err(|e| format!("token exchange failed: {e}"))?;
         let body: Value = response
             .into_json()
             .map_err(|e| format!("token exchange returned invalid JSON: {e}"))?;
 
-        let tokens = self.tokens_from_response(&body, &endpoints.token_endpoint, &client_id)?;
+        let tokens =
+            self.tokens_from_response(&body, &endpoints.token_endpoint, &client_id, &resource)?;
         self.save_tokens(&tokens)?;
         Ok(tokens)
     }
@@ -282,8 +336,12 @@ impl AuthSession {
             ])
             .map_err(|e| format!("refresh failed: {e}"))?;
         let body: Value = response.into_json().map_err(|e| e.to_string())?;
-        let mut refreshed =
-            self.tokens_from_response(&body, &tokens.token_endpoint, &tokens.client_id)?;
+        let mut refreshed = self.tokens_from_response(
+            &body,
+            &tokens.token_endpoint,
+            &tokens.client_id,
+            &tokens.resource,
+        )?;
         // Servers may omit the refresh token on rotation — keep the old one.
         if refreshed.refresh_token.is_none() {
             refreshed.refresh_token = Some(refresh_token);
@@ -296,6 +354,7 @@ impl AuthSession {
         body: &Value,
         token_endpoint: &str,
         client_id: &str,
+        resource: &str,
     ) -> Result<Tokens> {
         let access_token = body
             .get("access_token")
@@ -314,7 +373,7 @@ impl AuthSession {
                 .map(|s| now_unix() + s.saturating_sub(30)),
             token_endpoint: token_endpoint.to_string(),
             client_id: client_id.to_string(),
-            resource: self.mcp_url.clone(),
+            resource: resource.to_string(),
         })
     }
 
@@ -322,6 +381,11 @@ impl AuthSession {
 
     fn discover(&self) -> Result<AuthEndpoints> {
         let resource_metadata = self.fetch_resource_metadata();
+        let resource = resource_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("resource"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let (issuer, scope) = match &resource_metadata {
             Some(metadata) => {
                 let issuer = metadata
@@ -345,7 +409,7 @@ impl AuthSession {
                 (issuer, scope)
             }
             // Pre-RFC9728 servers: the MCP origin acts as the issuer.
-            None => (origin_of(&self.mcp_url)?, None),
+            None => (origin_of(&self.resource)?, None),
         };
 
         let metadata = fetch_auth_server_metadata(&issuer)?;
@@ -365,19 +429,20 @@ impl AuthSession {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             scope,
+            resource,
         })
     }
 
     /// RFC 9728: prefer the URL the server advertises in WWW-Authenticate,
     /// then fall back to the well-known locations.
     fn fetch_resource_metadata(&self) -> Option<Value> {
-        if let Some(url) = self.probe_www_authenticate() {
+        if let Some(url) = self.resource_metadata_url() {
             if let Some(value) = get_json(&url) {
                 return Some(value);
             }
         }
-        let origin = origin_of(&self.mcp_url).ok()?;
-        let path = self.mcp_url.strip_prefix(&origin).unwrap_or("");
+        let origin = origin_of(&self.resource).ok()?;
+        let path = self.resource.strip_prefix(&origin).unwrap_or("");
         for candidate in [
             format!("{origin}/.well-known/oauth-protected-resource{path}"),
             format!("{origin}/.well-known/oauth-protected-resource"),
@@ -389,9 +454,23 @@ impl AuthSession {
         None
     }
 
+    /// The `resource_metadata` URL for this session: from the challenge the
+    /// caller already holds, or — for an MCP endpoint — from one it provokes.
+    fn resource_metadata_url(&self) -> Option<String> {
+        if let Some(challenge) = &self.challenge {
+            if let Some(url) = resource_metadata_of(challenge) {
+                return Some(url);
+            }
+        }
+        if !self.probe_mcp {
+            return None;
+        }
+        self.probe_www_authenticate()
+    }
+
     fn probe_www_authenticate(&self) -> Option<String> {
         let response = http()
-            .post(&self.mcp_url)
+            .post(&self.resource)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream")
             .send_string(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#);
@@ -399,11 +478,7 @@ impl AuthSession {
             Err(ureq::Error::Status(401, resp)) => resp.header("WWW-Authenticate")?.to_string(),
             _ => return None,
         };
-        // e.g. Bearer resource_metadata="https://…"
-        let marker = "resource_metadata=\"";
-        let start = header.find(marker)? + marker.len();
-        let end = header[start..].find('"')? + start;
-        Some(header[start..end].to_string())
+        resource_metadata_of(&header)
     }
 
     /// Serve the OAuth redirect: accept connections until the /callback
@@ -433,8 +508,8 @@ impl AuthSession {
                                 && previous_token != Some(tokens.access_token.as_str())
                             {
                                 eprintln!(
-                                    "crewkit-bridge: `{}` was authorized by another login — done",
-                                    self.server_id
+                                    "crewkit: `{}` was authorized by another login — done",
+                                    self.session_id
                                 );
                                 return Ok(Callback::OtherLoginWon(tokens));
                             }
@@ -522,6 +597,10 @@ struct AuthEndpoints {
     token_endpoint: String,
     registration_endpoint: Option<String>,
     scope: Option<String>,
+    /// The `resource` the protected-resource metadata declares (RFC 8707
+    /// audience). For an MCP server it equals the endpoint URL; for a kit
+    /// it is the resource root, not the manifest we happened to request.
+    resource: Option<String>,
 }
 
 enum Callback {
@@ -529,6 +608,15 @@ enum Callback {
     Code(String),
     /// A concurrent login for the same server finished first.
     OtherLoginWon(Tokens),
+}
+
+/// Pull the `resource_metadata` URL out of a `WWW-Authenticate` header,
+/// e.g. `Bearer realm="kit", resource_metadata="https://…"`.
+pub fn resource_metadata_of(header: &str) -> Option<String> {
+    let marker = "resource_metadata=\"";
+    let start = header.find(marker)? + marker.len();
+    let end = header[start..].find('"')? + start;
+    Some(header[start..end].to_string())
 }
 
 fn fetch_auth_server_metadata(issuer: &str) -> Result<Value> {
@@ -704,7 +792,7 @@ fn process_alive(pid: u32) -> bool {
 fn process_alive(pid: u32) -> bool {
     // tasklist prints a table row for a live pid and an info message
     // otherwise; matching the pid in the output separates the two.
-    crewkit_core::cli::command("tasklist")
+    crate::cli::command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
@@ -802,12 +890,28 @@ fn open_browser(url: &str) {
     let (program, args): (&str, &[&str]) = ("rundll32", &["url.dll,FileProtocolHandler"]);
     #[cfg(not(any(target_os = "macos", windows)))]
     let (program, args): (&str, &[&str]) = ("xdg-open", &[]);
-    if crewkit_core::cli::command(program)
+    if crate::cli::command(program)
         .args(args)
         .arg(url)
         .spawn()
         .is_err()
     {
-        eprintln!("crewkit-bridge: could not open a browser; open this URL manually:\n{url}");
+        eprintln!("crewkit: could not open a browser; open this URL manually:\n{url}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resource_metadata_of;
+
+    #[test]
+    fn reads_the_resource_metadata_url_from_a_challenge() {
+        let header = "Bearer realm=\"kit\", resource_metadata=\"https://kits.example.com/.well-known/oauth-protected-resource/kit\", scope=\"kit:read\"";
+
+        assert_eq!(
+            resource_metadata_of(header).as_deref(),
+            Some("https://kits.example.com/.well-known/oauth-protected-resource/kit")
+        );
+        assert_eq!(resource_metadata_of("Bearer realm=\"kit\""), None);
     }
 }

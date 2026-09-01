@@ -11,6 +11,7 @@
 //! - Client paths and commands come from declarative adapters, not code.
 
 pub mod adapter;
+pub mod auth;
 pub mod bridge;
 pub mod cli;
 pub mod detect;
@@ -27,6 +28,7 @@ pub mod state;
 pub mod translate;
 
 pub use adapter::Adapter;
+pub use auth::AuthSession;
 pub use error::{Error, Result};
 pub use installer::{Engine, InstallReport, InstallScope, ScanReport, StepReport, StepStatus};
 pub use kit::Kit;

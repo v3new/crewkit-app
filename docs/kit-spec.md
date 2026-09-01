@@ -37,6 +37,41 @@ and refuse fetches that violate this. The only exception is loopback
 (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) so publishers can test
 against a local server during development.
 
+## Private kits
+
+A kit may be published behind a login — an internal kit that only a company's own
+people may download. Nothing about the manifest changes: the same document, the same
+detached signature, the same `sha256`-pinned artifacts. What changes is that the
+manifest URL, the `.sig` and every artifact answer **401** to an unauthorized request,
+with an RFC 9728 challenge naming where to authorize:
+
+```
+WWW-Authenticate: Bearer realm="kit",
+  resource_metadata="https://example.com/.well-known/oauth-protected-resource/kit",
+  scope="kit:read"
+```
+
+An installer that supports private kits then runs the same OAuth 2.1 flow it runs for
+MCP servers — protected-resource metadata (RFC 9728), authorization-server metadata
+(RFC 8414), dynamic client registration (RFC 7591), authorization code with PKCE in the
+system browser — and repeats the request with the access token. The token is bound to
+the `resource` the metadata declares (RFC 8707), which is the resource root, not the
+manifest URL that happened to answer 401.
+
+Rules:
+
+- The publisher's key pinning and the artifact digests are unchanged: **the signature
+  says who published the kit, the login says who may download it.** An installer MUST
+  verify the signature of a private kit exactly as it does a public one.
+- Responses to authorized requests are per-user; a private kit's artifacts MUST NOT be
+  cached by shared infrastructure (`Cache-Control: private, no-store`).
+- Refreshing a session MUST happen without user interaction while the refresh token is
+  valid; an installer MUST NOT open a browser tab during a background update check —
+  it reports that a sign-in is needed and lets the user start it.
+- An installer that does not support private kits fails with the server's 401. Servers
+  SHOULD therefore return a human-readable explanation in the response body, because
+  that text is what such an installer shows its user.
+
 ## Trust model
 
 - The publisher's ed25519 **public key travels inside the manifest** (`publisherKey`).
@@ -116,8 +151,9 @@ against a local server during development.
 ```
 
 Secrets never belong in a manifest. There is deliberately no field for API keys,
-tokens, or custom auth headers: manifests are public, cacheable documents, and
-credentials are obtained per user via OAuth (`"auth": "oauth"`) or not at all.
+tokens, or custom auth headers — not even for a kit served behind a login: a manifest
+is a document that gets copied around, and credentials are obtained per user via OAuth
+(see [Private kits](#private-kits) and `"auth": "oauth"` on MCP servers) or not at all.
 
 ## Plugin payload
 

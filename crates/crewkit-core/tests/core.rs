@@ -404,6 +404,70 @@ fn serve(routes: Vec<(String, Vec<u8>)>) -> u16 {
     port
 }
 
+/// A test server that answers 401 with an RFC 9728 challenge unless the
+/// request carries the expected bearer token — a kit behind a login.
+fn serve_guarded(routes: Vec<(String, Vec<u8>)>, token: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buffer = [0u8; 2048];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let authorized = request
+                .to_lowercase()
+                .contains(&format!("authorization: bearer {token}"));
+            let response = if !authorized {
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"kit\", resource_metadata=\"https://example.invalid/.well-known/oauth-protected-resource/kit\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec()
+            } else {
+                match routes.iter().find(|(route, _)| *route == path) {
+                    Some((_, body)) => {
+                        let mut r = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .into_bytes();
+                        r.extend(body.clone());
+                        r
+                    }
+                    None => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                }
+            };
+            let _ = stream.write_all(&response);
+        }
+    });
+    port
+}
+
+/// A kit published behind a login, fetched with nobody watching: the
+/// fetcher must ask for a sign-in, not open a browser tab on its own.
+#[test]
+fn remote_kit_behind_login_asks_for_a_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+    let crewkit_dir = paths.crewkit_dir();
+
+    let port = serve_guarded(vec![("/kit.json".into(), b"{}".to_vec())], "good-token");
+    let url = format!("http://127.0.0.1:{port}/kit.json");
+
+    let error =
+        crewkit_core::kits::fetch_kit(&url, None, &crewkit_dir, crewkit_core::kits::Auth::Silent)
+            .unwrap_err();
+
+    assert!(
+        matches!(error, crewkit_core::Error::AuthRequired(_)),
+        "expected AuthRequired, got {error:?}"
+    );
+    assert!(error.to_string().contains("sign in"), "{error}");
+}
+
 #[test]
 fn remote_kit_fetch_verifies_signature_and_integrity() {
     let tmp = tempfile::tempdir().unwrap();
@@ -438,7 +502,9 @@ fn remote_kit_fetch_verifies_signature_and_integrity() {
     let url = format!("http://127.0.0.1:{port}/kit.json");
 
     // Happy path: verified, artifact downloaded and integrity-checked.
-    let fetched = crewkit_core::kits::fetch_kit(&url, None, &crewkit_dir).unwrap();
+    let fetched =
+        crewkit_core::kits::fetch_kit(&url, None, &crewkit_dir, crewkit_core::kits::Auth::Silent)
+            .unwrap();
     let local_zip = fetched.kit.plugins[0].zip.clone().unwrap();
     assert!(fetched.zips_dir.join(&local_zip).is_file());
     assert_eq!(
@@ -448,9 +514,14 @@ fn remote_kit_fetch_verifies_signature_and_integrity() {
 
     // Pinned-key mismatch is refused (CDN-compromise protection).
     let (_, other_public) = crewkit_core::kits::generate_keypair();
-    let error = crewkit_core::kits::fetch_kit(&url, Some(&other_public), &crewkit_dir)
-        .unwrap_err()
-        .to_string();
+    let error = crewkit_core::kits::fetch_kit(
+        &url,
+        Some(&other_public),
+        &crewkit_dir,
+        crewkit_core::kits::Auth::Silent,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("publisher key changed"), "{error}");
 
     // A tampered manifest fails signature verification.
@@ -465,6 +536,7 @@ fn remote_kit_fetch_verifies_signature_and_integrity() {
         &format!("http://127.0.0.1:{port2}/kit.json"),
         None,
         &crewkit_dir,
+        crewkit_core::kits::Auth::Silent,
     )
     .unwrap_err()
     .to_string();
