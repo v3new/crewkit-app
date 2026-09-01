@@ -4,7 +4,7 @@ use toml_edit::DocumentMut;
 use crate::detect::DetectedClient;
 use crate::error::Result;
 use crate::fsops;
-use crate::kit::Kit;
+use crate::kit::{Kit, KitPlugin, McpServer};
 use crate::mcp::{MANAGED_KEY, MANAGED_VALUE};
 use crate::paths::Paths;
 use crate::state::ManagedState;
@@ -120,6 +120,16 @@ fn iso_to_epoch_ms(iso: &str) -> Option<u64> {
     u64::try_from(secs).ok().map(|s| s * 1000)
 }
 
+/// Which half of the kit to read. Retired items are exactly the ones a
+/// kit update wants gone, so their real status has to be readable too:
+/// reading only the active half made every tombstone look "not installed"
+/// to the installer, and nothing was ever retired.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Survey {
+    Active,
+    Retired,
+}
+
 /// Read what is actually installed straight from the clients' own state
 /// files — the honest inventory the UI shows and the installer consults.
 pub fn inventory(
@@ -128,15 +138,54 @@ pub fn inventory(
     state: &ManagedState,
     clients: &[DetectedClient],
 ) -> Result<Vec<ItemState>> {
+    survey(kit, paths, state, clients, Survey::Active)
+}
+
+/// The same reading, for the items the kit marks `remove: true`. Kept out
+/// of `inventory` so the scan the UI renders stays the active set.
+pub fn retired_inventory(
+    kit: &Kit,
+    paths: &Paths,
+    state: &ManagedState,
+    clients: &[DetectedClient],
+) -> Result<Vec<ItemState>> {
+    survey(kit, paths, state, clients, Survey::Retired)
+}
+
+fn survey(
+    kit: &Kit,
+    paths: &Paths,
+    state: &ManagedState,
+    clients: &[DetectedClient],
+    which: Survey,
+) -> Result<Vec<ItemState>> {
+    let retired = which == Survey::Retired;
+    let plugins: Vec<&KitPlugin> = kit.plugins.iter().filter(|p| p.remove == retired).collect();
+    let servers: Vec<&McpServer> = kit
+        .mcp_servers
+        .iter()
+        .filter(|s| s.remove == retired)
+        .collect();
     let mut items = Vec::new();
     let present = |id: &str| clients.iter().any(|c| c.id == id && c.present);
 
     // --- Claude plugins: ~/.claude/settings.json → enabledPlugins ---
     let claude_settings = fsops::read_json(&paths.claude_config_dir.join("settings.json"))?;
-    for plugin in kit.active_plugins() {
+    for &plugin in &plugins {
         let plugin_id = kit.plugin_id(plugin);
+        let install = claude_plugin_install(paths, &plugin_id);
         let status = if !present("claude-code") {
             Status::ClientUnavailable
+        } else if retired {
+            // Retirement has to reach a plugin the user merely switched
+            // off, so presence is judged by the install record rather than
+            // the enabled flag — otherwise a disabled leftover survives
+            // every kit update.
+            if install.is_some() {
+                Status::Installed
+            } else {
+                Status::NotInstalled
+            }
         } else {
             let enabled = claude_settings
                 .as_ref()
@@ -150,7 +199,6 @@ pub fn inventory(
                 Status::NotInstalled
             }
         };
-        let install = claude_plugin_install(paths, &plugin_id);
         items.push(ItemState {
             kind: "plugin".into(),
             id: plugin_id,
@@ -171,10 +219,18 @@ pub fn inventory(
     } else {
         None
     };
-    for plugin in kit.active_plugins() {
+    for &plugin in &plugins {
         let plugin_id = kit.plugin_id(plugin);
+        let install = codex_plugin_install(paths, &kit.marketplace_name, &plugin.name);
         let status = if !present("codex") {
             Status::ClientUnavailable
+        } else if retired {
+            // Same as Claude: a switched-off leftover still has to go.
+            if install.is_some() {
+                Status::Installed
+            } else {
+                Status::NotInstalled
+            }
         } else {
             let enabled = codex_doc
                 .as_ref()
@@ -190,7 +246,6 @@ pub fn inventory(
                 Status::NotInstalled
             }
         };
-        let install = codex_plugin_install(paths, &kit.marketplace_name, &plugin.name);
         items.push(ItemState {
             kind: "plugin".into(),
             id: plugin_id,
@@ -201,7 +256,7 @@ pub fn inventory(
             updated_at_ms: install.and_then(|(_, t)| t),
         });
     }
-    for server in kit.active_mcp_servers() {
+    for &server in &servers {
         let default_detail = "crewkit-bridge (stdio) in codex config.toml".to_string();
         let (status, detail) = if !present("codex") {
             (Status::ClientUnavailable, default_detail)
@@ -251,7 +306,7 @@ pub fn inventory(
     let claude_servers = claude_user_config
         .as_ref()
         .and_then(|c| c.get("mcpServers"));
-    for server in kit.active_mcp_servers() {
+    for &server in &servers {
         let default_detail = "crewkit-bridge (stdio) at user scope in .claude.json".to_string();
         let (status, detail) = if !present("claude-code") {
             (Status::ClientUnavailable, default_detail)
@@ -301,7 +356,7 @@ pub fn inventory(
     // by the bridge shape plus CrewKit's state.
     let desktop_config = fsops::read_json(&paths.claude_desktop_config())?;
     let desktop_servers = desktop_config.as_ref().and_then(|c| c.get("mcpServers"));
-    for server in kit.active_mcp_servers() {
+    for &server in &servers {
         let default_detail = "crewkit-bridge (stdio) in claude_desktop_config.json".to_string();
         let (status, detail) = if !present("claude-desktop") {
             (Status::ClientUnavailable, default_detail)

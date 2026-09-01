@@ -641,3 +641,92 @@ fn codex_mcp_installs_without_a_cli() {
         .unwrap();
     assert_eq!(installed.status, Status::Installed);
 }
+
+/// Regression: a kit retires an item, and the installer has to know whether
+/// that item is still on the machine. The survey it consulted covered the
+/// active kit only, so every tombstone read back as "not installed" and
+/// nothing was ever removed — a renamed plugin stayed installed forever
+/// beside its replacement. Ownership never entered into it: for plugins the
+/// status is simply whether the client has it enabled, so a retired plugin
+/// is removed whoever installed it.
+#[test]
+fn retired_plugins_are_surveyed_so_tombstones_actually_remove() {
+    use crewkit_core::detect::detect_all;
+    use crewkit_core::inventory::{inventory, retired_inventory, Status};
+    use crewkit_core::state::ManagedState;
+    use crewkit_core::{Adapter, Kit};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+
+    let kit = Kit::load(
+        r#"{
+          "id": "test-kit",
+          "name": "Test Kit",
+          "publisher": "Tests",
+          "marketplaceName": "testmkt",
+          "plugins": [
+            { "name": "keeper", "zip": "keeper.zip" },
+            { "name": "oldname", "remove": true }
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    // Claude Code is present. `keeper` is enabled; the retired `oldname` was
+    // installed under its former name and then switched off by the user —
+    // still on disk, and still to be taken away.
+    std::fs::create_dir_all(paths.claude_config_dir.join("plugins")).unwrap();
+    std::fs::write(
+        paths.claude_config_dir.join("settings.json"),
+        r#"{ "enabledPlugins": { "keeper@testmkt": true, "oldname@testmkt": false } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        paths
+            .claude_config_dir
+            .join("plugins/installed_plugins.json"),
+        r#"{ "plugins": { "oldname@testmkt": [ { "version": "1.0.0" } ] } }"#,
+    )
+    .unwrap();
+    let adapter = Adapter::load(
+        r#"{
+          "id": "claude-code",
+          "name": "Claude Code",
+          "cli": { "pathNames": [], "bundledGlobs": [] },
+          "files": { "settings": "${claudeConfigDir}/settings.json" }
+        }"#,
+    )
+    .unwrap();
+    let clients = detect_all(&[adapter], &paths);
+    let state = ManagedState::default();
+
+    // The scan the UI renders stays the active kit: a retired plugin is not
+    // a row, or it would count towards "N of M installed".
+    let active = inventory(&kit, &paths, &state, &clients).unwrap();
+    assert!(
+        active.iter().any(|i| i.id == "keeper@testmkt"),
+        "active plugin must be surveyed: {active:#?}"
+    );
+    assert!(
+        !active.iter().any(|i| i.id == "oldname@testmkt"),
+        "retired plugin must stay out of the UI scan: {active:#?}"
+    );
+
+    // The removal sweep reads the other half, and sees the truth.
+    let retired = retired_inventory(&kit, &paths, &state, &clients).unwrap();
+    let oldname = retired
+        .iter()
+        .find(|i| i.kind == "plugin" && i.client == "claude-code" && i.id == "oldname@testmkt")
+        .expect("retired plugin must be surveyed");
+    assert_eq!(
+        oldname.status,
+        Status::Installed,
+        "a retired plugin still on disk reads as installed even when disabled — \
+         judging it by the enabled flag would strand every switched-off leftover"
+    );
+    assert!(
+        !retired.iter().any(|i| i.id == "keeper@testmkt"),
+        "the retired survey covers only tombstones: {retired:#?}"
+    );
+}
