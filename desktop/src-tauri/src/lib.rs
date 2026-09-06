@@ -602,6 +602,10 @@ struct EventLog {
     app_version: Option<String>,
     #[serde(default)]
     entries: Vec<serde_json::Value>,
+    /// Last detected-clients snapshot the UI journaled, so a rescan that
+    /// finds the same apps writes nothing.
+    #[serde(default)]
+    detected: Option<String>,
 }
 
 fn events_path() -> PathBuf {

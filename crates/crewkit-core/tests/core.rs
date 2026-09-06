@@ -802,3 +802,122 @@ fn retired_plugins_are_surveyed_so_tombstones_actually_remove() {
         "the retired survey covers only tombstones: {retired:#?}"
     );
 }
+
+/// Cowork does not read Claude Code's plugins: it has its own store per
+/// `<account>/<org>` profile. Plugins are copied in and enabled there, and
+/// removed cleanly again — the marketplace copy going with the last one.
+#[test]
+fn cowork_plugins_install_and_remove_roundtrip() {
+    use crewkit_core::inventory::Status;
+    use crewkit_core::{Adapter, Engine, StepStatus};
+
+    fn json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::rooted(tmp.path());
+    let (kit, zips_dir) = synth_kit(tmp.path());
+
+    std::fs::create_dir_all(paths.home.join("Applications/Claude.app")).unwrap();
+    let desktop = Adapter::load(
+        r#"{
+          "id": "claude-desktop",
+          "name": "Claude Desktop",
+          "appPaths": ["${home}/Applications/Claude.app"],
+          "files": { "config": "${appSupport}/Claude/claude_desktop_config.json" },
+          "restartRequired": true
+        }"#,
+    )
+    .unwrap();
+    let sessions = paths.claude_desktop_dir().join("local-agent-mode-sessions");
+    let profile = sessions.join("acct-1111/org-2222");
+    std::fs::create_dir_all(&profile).unwrap();
+    // The account skills cache sits beside the profiles and is not one.
+    std::fs::create_dir_all(sessions.join("skills-plugin/org-2222/acct-1111")).unwrap();
+
+    let bridge_source = tmp.path().join("bridge-source");
+    std::fs::write(&bridge_source, b"#!/bin/sh\nexit 0\n").unwrap();
+    let engine = Engine {
+        paths: paths.clone(),
+        adapters: vec![desktop],
+        kit,
+        zips_dir,
+        bridge_source,
+        frontmatter_map: frontmatter_map(),
+    };
+
+    let report = engine.install(|_| {}).unwrap();
+    assert!(
+        !report.steps.iter().any(|s| s.status == StepStatus::Failed),
+        "no step may fail: {:#?}",
+        report.steps
+    );
+
+    let store = profile.join("cowork_plugins");
+    let installed = json(&store.join("installed_plugins.json"));
+    assert_eq!(installed["version"], 2);
+    let entry = &installed["plugins"]["toolbox@testmkt"][0];
+    assert_eq!(entry["scope"], "user");
+    assert_eq!(entry["version"], "9.9.9");
+    let install_path = PathBuf::from(entry["installPath"].as_str().unwrap());
+    assert!(install_path.starts_with(&store), "{install_path:?}");
+    assert!(install_path.join(".claude-plugin/plugin.json").is_file());
+    assert!(install_path.join("skills/toolbox-skill/SKILL.md").is_file());
+    assert!(store
+        .join("marketplaces/testmkt/.claude-plugin/marketplace.json")
+        .is_file());
+    let known = json(&store.join("known_marketplaces.json"));
+    assert_eq!(known["testmkt"]["source"]["source"], "directory");
+    let settings = json(&profile.join("cowork_settings.json"));
+    assert_eq!(settings["enabledPlugins"]["toolbox@testmkt"], true);
+    assert_eq!(settings["enabledPlugins"]["notes@testmkt"], true);
+    assert!(!sessions
+        .join("skills-plugin/org-2222/acct-1111/cowork_plugins")
+        .exists());
+    let item = report
+        .scan
+        .items
+        .iter()
+        .find(|i| i.kind == "plugin" && i.client == "claude-desktop" && i.id == "toolbox@testmkt")
+        .unwrap();
+    assert_eq!(item.status, Status::Installed);
+    assert_eq!(item.version.as_deref(), Some("9.9.9"));
+    assert!(report
+        .restart_needed
+        .contains(&"Claude Desktop".to_string()));
+
+    // Installing again changes nothing and says so.
+    let again = engine.install(|_| {}).unwrap();
+    let skips = again
+        .steps
+        .iter()
+        .filter(|s| {
+            s.client == "claude-desktop"
+                && s.step.starts_with("Install plugin")
+                && s.status == StepStatus::Skipped
+        })
+        .count();
+    assert_eq!(skips, 2, "{:#?}", again.steps);
+
+    // Removing one plugin leaves the marketplace copy for the other.
+    engine
+        .remove_item("plugin", "toolbox@testmkt", |_| {})
+        .unwrap();
+    let installed = json(&store.join("installed_plugins.json"));
+    assert!(installed["plugins"].get("toolbox@testmkt").is_none());
+    assert!(installed["plugins"].get("notes@testmkt").is_some());
+    assert!(!install_path.exists());
+    let settings = json(&profile.join("cowork_settings.json"));
+    assert!(settings["enabledPlugins"].get("toolbox@testmkt").is_none());
+    assert!(store.join("marketplaces/testmkt").is_dir());
+
+    // Removing the last one takes the marketplace copy and its registration.
+    engine
+        .remove_item("plugin", "notes@testmkt", |_| {})
+        .unwrap();
+    assert!(!store.join("marketplaces/testmkt").exists());
+    assert!(json(&store.join("known_marketplaces.json"))
+        .get("testmkt")
+        .is_none());
+}

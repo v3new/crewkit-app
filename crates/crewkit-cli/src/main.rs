@@ -201,8 +201,8 @@ fn scan(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<(), String> {
             .map(|v| format!(" v{v}"))
             .unwrap_or_default();
         println!(
-            "  {:6} {:32} {:14} {:?}{version}",
-            item.kind, item.id, item.client, item.status
+            "  {:6} {:32} {:14} {:?}{version}  {}",
+            item.kind, item.id, item.client, item.status, item.path
         );
     }
 

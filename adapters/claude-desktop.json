@@ -12,5 +12,5 @@
     "configStore": "${localAppData}/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json"
   },
   "restartRequired": true,
-  "notes": "Local config accepts only stdio MCP servers, so remote servers are installed as crewkit-bridge entries. Restart the app to pick up changes. The Microsoft Store (MSIX) build lives under its package-family dir and reads the config from its virtualized LocalCache, not the real %APPDATA% — Paths::claude_desktop_config picks the right one."
+  "notes": "Plugins: Cowork keeps its own store under local-agent-mode-sessions/<account>/<org>/cowork_plugins (the staged marketplace is copied in, plugins are recorded in installed_plugins.json and enabled in cowork_settings.json); new Cowork sessions pick them up. MCP: the local config accepts only stdio servers, so remote servers are installed as crewkit-bridge entries; restart the app to pick up changes. The Microsoft Store (MSIX) build lives under its package-family dir and reads its data from the virtualized LocalCache, not the real %APPDATA% — Paths::claude_desktop_dir picks the right one."
 }

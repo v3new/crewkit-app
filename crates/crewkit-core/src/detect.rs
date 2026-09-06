@@ -25,6 +25,8 @@ pub struct DetectedClient {
     pub id: String,
     pub name: String,
     pub app_installed: bool,
+    /// Where the desktop app was found, when it is.
+    pub app_path: Option<PathBuf>,
     /// The desktop app's own version (distinct from the CLI's) — read
     /// from the bundle's Info.plist on macOS, None elsewhere.
     pub app_version: Option<String>,
@@ -89,6 +91,7 @@ fn detect_one(adapter: &Adapter, paths: &Paths) -> DetectedClient {
         id: adapter.id.clone(),
         name: adapter.name.clone(),
         app_installed,
+        app_path,
         app_version,
         cli_path,
         cli_version,

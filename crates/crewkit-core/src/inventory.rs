@@ -1,6 +1,9 @@
+use std::path::{Path, MAIN_SEPARATOR};
+
 use serde::Serialize;
 use toml_edit::DocumentMut;
 
+use crate::cowork;
 use crate::detect::DetectedClient;
 use crate::error::Result;
 use crate::fsops;
@@ -31,11 +34,32 @@ pub struct ItemState {
     pub id: String,
     pub client: String,
     pub status: Status,
-    pub detail: String,
+    /// Config file or directory this surface reads the item from.
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<Note>,
     /// Installed version, when the client tracks one (plugins).
     pub version: Option<String>,
     /// Last install/update time, unix milliseconds.
     pub updated_at_ms: Option<u64>,
+}
+
+/// Anything unusual about an item's state that the UI should spell out.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
+pub enum Note {
+    /// An entry under this id was added outside CrewKit; installing adopts it.
+    Foreign(String),
+    /// Cowork has never been opened, so there is no profile to install into.
+    NoCoworkProfile,
+}
+
+/// `~`-relative when under the home directory.
+fn short(paths: &Paths, path: &Path) -> String {
+    match path.strip_prefix(&paths.home) {
+        Ok(rel) => format!("~{MAIN_SEPARATOR}{}", rel.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 /// Installed version + last-update time of a Claude plugin, from
@@ -93,7 +117,7 @@ pub fn codex_plugin_install(
 }
 
 /// Minimal ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.sss]Z`) to unix milliseconds.
-fn iso_to_epoch_ms(iso: &str) -> Option<u64> {
+pub(crate) fn iso_to_epoch_ms(iso: &str) -> Option<u64> {
     let date = &iso.get(0..10)?;
     let time = iso.get(11..19).unwrap_or("00:00:00");
     let mut parts = date.split('-');
@@ -170,7 +194,8 @@ fn survey(
     let present = |id: &str| clients.iter().any(|c| c.id == id && c.present);
 
     // --- Claude plugins: ~/.claude/settings.json → enabledPlugins ---
-    let claude_settings = fsops::read_json(&paths.claude_config_dir.join("settings.json"))?;
+    let claude_settings_path = paths.claude_config_dir.join("settings.json");
+    let claude_settings = fsops::read_json(&claude_settings_path)?;
     for &plugin in &plugins {
         let plugin_id = kit.plugin_id(plugin);
         let install = claude_plugin_install(paths, &plugin_id);
@@ -204,7 +229,47 @@ fn survey(
             id: plugin_id,
             client: "claude-code".into(),
             status,
-            detail: "via enabledPlugins in Claude settings".into(),
+            path: short(paths, &claude_settings_path),
+            note: None,
+            version: install.as_ref().map(|(v, _)| v.clone()),
+            updated_at_ms: install.and_then(|(_, t)| t),
+        });
+    }
+
+    // --- Claude Cowork plugins: its own store under the Claude data dir ---
+    let profiles = cowork::profiles(paths);
+    for &plugin in &plugins {
+        let plugin_id = kit.plugin_id(plugin);
+        let install = profiles
+            .iter()
+            .find_map(|p| cowork::installed(p, &plugin_id));
+        let mut note = None;
+        let status = if !present("claude-desktop") {
+            Status::ClientUnavailable
+        } else if profiles.is_empty() {
+            note = Some(Note::NoCoworkProfile);
+            Status::NotInstalled
+        } else if retired {
+            if install.is_some() {
+                Status::Installed
+            } else {
+                Status::NotInstalled
+            }
+        } else if profiles.iter().all(|p| cowork::enabled(p, &plugin_id)) {
+            Status::Installed
+        } else {
+            Status::NotInstalled
+        };
+        items.push(ItemState {
+            kind: "plugin".into(),
+            id: plugin_id,
+            client: "claude-desktop".into(),
+            status,
+            path: profiles
+                .first()
+                .map(|p| short(paths, &p.plugins_dir()))
+                .unwrap_or_default(),
+            note,
             version: install.as_ref().map(|(v, _)| v.clone()),
             updated_at_ms: install.and_then(|(_, t)| t),
         });
@@ -251,15 +316,15 @@ fn survey(
             id: plugin_id,
             client: "codex".into(),
             status,
-            detail: "via [plugins] in codex config.toml".into(),
+            path: short(paths, &codex_config_path),
+            note: None,
             version: install.as_ref().map(|(v, _)| v.clone()),
             updated_at_ms: install.and_then(|(_, t)| t),
         });
     }
     for &server in &servers {
-        let default_detail = "crewkit-bridge (stdio) in codex config.toml".to_string();
-        let (status, detail) = if !present("codex") {
-            (Status::ClientUnavailable, default_detail)
+        let (status, note) = if !present("codex") {
+            (Status::ClientUnavailable, None)
         } else {
             match codex_doc
                 .as_ref()
@@ -275,9 +340,12 @@ fn survey(
                             .mcp_servers
                             .contains(&ManagedState::key("codex", &server.id));
                     if ours {
-                        (Status::Installed, default_detail)
+                        (Status::Installed, None)
                     } else {
-                        (Status::InstalledForeign, foreign_detail(&server.id))
+                        (
+                            Status::InstalledForeign,
+                            Some(Note::Foreign(server.id.clone())),
+                        )
                     }
                 }
                 None => match codex_doc
@@ -285,8 +353,8 @@ fn survey(
                     .map(|d| crate::mcp::codex_servers_targeting(d, &server.url, &server.id))
                     .and_then(|dups| dups.into_iter().next())
                 {
-                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
-                    None => (Status::NotInstalled, default_detail),
+                    Some(dup) => (Status::InstalledForeign, Some(Note::Foreign(dup))),
+                    None => (Status::NotInstalled, None),
                 },
             }
         };
@@ -295,21 +363,22 @@ fn survey(
             id: server.id.clone(),
             client: "codex".into(),
             status,
-            detail,
+            path: short(paths, &codex_config_path),
+            note,
             version: None,
             updated_at_ms: None,
         });
     }
 
     // --- Claude Code MCP servers: user scope in .claude.json ---
-    let claude_user_config = fsops::read_json(&paths.claude_config_dir.join(".claude.json"))?;
+    let claude_json_path = paths.claude_config_dir.join(".claude.json");
+    let claude_user_config = fsops::read_json(&claude_json_path)?;
     let claude_servers = claude_user_config
         .as_ref()
         .and_then(|c| c.get("mcpServers"));
     for &server in &servers {
-        let default_detail = "crewkit-bridge (stdio) at user scope in .claude.json".to_string();
-        let (status, detail) = if !present("claude-code") {
-            (Status::ClientUnavailable, default_detail)
+        let (status, note) = if !present("claude-code") {
+            (Status::ClientUnavailable, None)
         } else {
             match claude_servers.and_then(|m| m.get(&server.id)) {
                 Some(entry) => {
@@ -321,9 +390,12 @@ fn survey(
                             .mcp_servers
                             .contains(&ManagedState::key("claude-code", &server.id));
                     if ours {
-                        (Status::Installed, default_detail)
+                        (Status::Installed, None)
                     } else {
-                        (Status::InstalledForeign, foreign_detail(&server.id))
+                        (
+                            Status::InstalledForeign,
+                            Some(Note::Foreign(server.id.clone())),
+                        )
                     }
                 }
                 None => match crate::mcp::json_servers_targeting(
@@ -334,8 +406,8 @@ fn survey(
                 .into_iter()
                 .next()
                 {
-                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
-                    None => (Status::NotInstalled, default_detail),
+                    Some(dup) => (Status::InstalledForeign, Some(Note::Foreign(dup))),
+                    None => (Status::NotInstalled, None),
                 },
             }
         };
@@ -344,7 +416,8 @@ fn survey(
             id: server.id.clone(),
             client: "claude-code".into(),
             status,
-            detail,
+            path: short(paths, &claude_json_path),
+            note,
             version: None,
             updated_at_ms: None,
         });
@@ -354,12 +427,12 @@ fn survey(
     // claude_desktop_config.json (its local config is stdio-only). The app
     // may rewrite this file and drop unknown keys, so ownership is judged
     // by the bridge shape plus CrewKit's state.
-    let desktop_config = fsops::read_json(&paths.claude_desktop_config())?;
+    let desktop_config_path = paths.claude_desktop_config();
+    let desktop_config = fsops::read_json(&desktop_config_path)?;
     let desktop_servers = desktop_config.as_ref().and_then(|c| c.get("mcpServers"));
     for &server in &servers {
-        let default_detail = "crewkit-bridge (stdio) in claude_desktop_config.json".to_string();
-        let (status, detail) = if !present("claude-desktop") {
-            (Status::ClientUnavailable, default_detail)
+        let (status, note) = if !present("claude-desktop") {
+            (Status::ClientUnavailable, None)
         } else {
             match desktop_servers.and_then(|m| m.get(&server.id)) {
                 Some(entry) => {
@@ -371,9 +444,12 @@ fn survey(
                             .mcp_servers
                             .contains(&ManagedState::key("claude-desktop", &server.id));
                     if ours {
-                        (Status::Installed, default_detail)
+                        (Status::Installed, None)
                     } else {
-                        (Status::InstalledForeign, foreign_detail(&server.id))
+                        (
+                            Status::InstalledForeign,
+                            Some(Note::Foreign(server.id.clone())),
+                        )
                     }
                 }
                 None => match crate::mcp::json_servers_targeting(
@@ -384,8 +460,8 @@ fn survey(
                 .into_iter()
                 .next()
                 {
-                    Some(dup) => (Status::InstalledForeign, foreign_detail(&dup)),
-                    None => (Status::NotInstalled, default_detail),
+                    Some(dup) => (Status::InstalledForeign, Some(Note::Foreign(dup))),
+                    None => (Status::NotInstalled, None),
                 },
             }
         };
@@ -394,16 +470,12 @@ fn survey(
             id: server.id.clone(),
             client: "claude-desktop".into(),
             status,
-            detail,
+            path: short(paths, &desktop_config_path),
+            note,
             version: None,
             updated_at_ms: None,
         });
     }
 
     Ok(items)
-}
-
-/// Detail line for an entry added outside CrewKit that installing adopts.
-fn foreign_detail(entry_id: &str) -> String {
-    format!("`{entry_id}` was added outside CrewKit — installing takes over management")
 }

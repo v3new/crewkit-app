@@ -14,6 +14,7 @@ pub mod adapter;
 pub mod auth;
 pub mod bridge;
 pub mod cli;
+pub mod cowork;
 pub mod detect;
 pub mod error;
 pub mod fsops;

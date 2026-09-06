@@ -53,6 +53,7 @@ interface DetectedClient {
   id: string;
   name: string;
   appInstalled: boolean;
+  appPath: string | null;
   appVersion: string | null;
   cliPath: string | null;
   cliVersion: string | null;
@@ -69,7 +70,8 @@ interface ItemState {
   id: string;
   client: string;
   status: ItemStatus;
-  detail: string;
+  path: string;
+  note?: { kind: "foreign"; value: string } | { kind: "no-cowork-profile" };
   version: string | null;
   updatedAtMs: number | null;
 }
@@ -165,6 +167,15 @@ const STRINGS: Record<string, Record<string, string>> = {
     installToApp: "Install to {app}",
     notSupported: "Not supported",
     notSupportedTip: "Transport `{t}` needs a newer CrewKit version.",
+    wherePluginClaudeCode: "Plugin for the CLI and the Code tab",
+    whereMcpClaudeCode: "Server via CrewKit bridge, CLI and the Code tab",
+    wherePluginClaudeDesktop: "Plugin for Cowork sessions",
+    whereMcpClaudeDesktop: "Server via CrewKit bridge, Desktop chat and Cowork",
+    wherePluginCodex: "Plugin for Codex CLI and the ChatGPT app",
+    whereMcpCodex: "Server via CrewKit bridge, Codex CLI and the ChatGPT app",
+    sharesCodex: "shares the Codex config",
+    noteForeign: "`{id}` was added outside CrewKit",
+    noteNoCoworkProfile: "Open Cowork once so it creates its profile",
   },
   ru: {
     rescan: "Обновить",
@@ -233,6 +244,15 @@ const STRINGS: Record<string, Record<string, string>> = {
     installToApp: "Установить в {app}",
     notSupported: "Не поддерживается",
     notSupportedTip: "Транспорт `{t}` требует более новой версии CrewKit.",
+    wherePluginClaudeCode: "Плагин для CLI и вкладки Code",
+    whereMcpClaudeCode: "Сервер через CrewKit bridge, CLI и вкладка Code",
+    wherePluginClaudeDesktop: "Плагин для сессий Cowork",
+    whereMcpClaudeDesktop: "Сервер через CrewKit bridge, чат Desktop и Cowork",
+    wherePluginCodex: "Плагин для Codex CLI и приложения ChatGPT",
+    whereMcpCodex: "Сервер через CrewKit bridge, Codex CLI и приложение ChatGPT",
+    sharesCodex: "общий конфиг с Codex",
+    noteForeign: "`{id}` добавлен вне CrewKit",
+    noteNoCoworkProfile: "Откройте Cowork один раз, чтобы он создал профиль",
   },
   es: {
     rescan: "Reescanear",
@@ -301,6 +321,15 @@ const STRINGS: Record<string, Record<string, string>> = {
     installToApp: "Instalar en {app}",
     notSupported: "No compatible",
     notSupportedTip: "El transporte `{t}` requiere una versión más reciente de CrewKit.",
+    wherePluginClaudeCode: "Plugin para la CLI y la pestaña Code",
+    whereMcpClaudeCode: "Servidor vía CrewKit bridge, CLI y pestaña Code",
+    wherePluginClaudeDesktop: "Plugin para sesiones de Cowork",
+    whereMcpClaudeDesktop: "Servidor vía CrewKit bridge, chat de Desktop y Cowork",
+    wherePluginCodex: "Plugin para Codex CLI y la app de ChatGPT",
+    whereMcpCodex: "Servidor vía CrewKit bridge, Codex CLI y la app de ChatGPT",
+    sharesCodex: "comparte la configuración de Codex",
+    noteForeign: "`{id}` se añadió fuera de CrewKit",
+    noteNoCoworkProfile: "Abre Cowork una vez para que cree su perfil",
   },
   zh: {
     rescan: "重新扫描",
@@ -369,6 +398,15 @@ const STRINGS: Record<string, Record<string, string>> = {
     installToApp: "安装到 {app}",
     notSupported: "不支持",
     notSupportedTip: "传输协议 `{t}` 需要更新版本的 CrewKit。",
+    wherePluginClaudeCode: "用于 CLI 和 Code 标签页的插件",
+    whereMcpClaudeCode: "通过 CrewKit bridge 的服务器，CLI 和 Code 标签页",
+    wherePluginClaudeDesktop: "用于 Cowork 会话的插件",
+    whereMcpClaudeDesktop: "通过 CrewKit bridge 的服务器，Desktop 聊天和 Cowork",
+    wherePluginCodex: "用于 Codex CLI 和 ChatGPT 应用的插件",
+    whereMcpCodex: "通过 CrewKit bridge 的服务器，Codex CLI 和 ChatGPT 应用",
+    sharesCodex: "与 Codex 共用配置",
+    noteForeign: "`{id}` 是在 CrewKit 之外添加的",
+    noteNoCoworkProfile: "请先打开一次 Cowork 以创建其配置",
   },
 };
 
@@ -398,6 +436,15 @@ const COLUMNS = [
 
 type Column = (typeof COLUMNS)[number];
 
+const WHERE_KEY: Record<string, string> = {
+  "plugin:claude-code": "wherePluginClaudeCode",
+  "mcp:claude-code": "whereMcpClaudeCode",
+  "plugin:claude-desktop": "wherePluginClaudeDesktop",
+  "mcp:claude-desktop": "whereMcpClaudeDesktop",
+  "plugin:codex": "wherePluginCodex",
+  "mcp:codex": "whereMcpCodex",
+};
+
 const SURFACE_LABEL: Record<string, string> = {
   "claude-code": "Claude Code",
   "claude-desktop": "Claude Desktop",
@@ -415,6 +462,7 @@ type LogEntry = StepReport & { atMs: number };
 interface EventLogFile {
   appVersion: string | null;
   entries: LogEntry[];
+  detected?: string | null;
 }
 
 const LOG_MAX = 500;
@@ -425,7 +473,9 @@ let logSaveChain = Promise.resolve();
 
 function persistLog(): void {
   logSaveChain = logSaveChain.then(() =>
-    invoke("save_event_log", { log: { appVersion: __APP_VERSION__, entries: logSteps } }).then(
+    invoke("save_event_log", {
+      log: { appVersion: __APP_VERSION__, entries: logSteps, detected: lastDetection },
+    }).then(
       () => undefined,
       // A failed save only loses history, never breaks the app.
       () => undefined
@@ -438,6 +488,40 @@ function logEvents(...steps: StepReport[]): void {
   logSteps.push(...steps.map((s) => ({ ...s, atMs })));
   if (logSteps.length > LOG_MAX) logSteps.splice(0, logSteps.length - LOG_MAX);
   persistLog();
+}
+
+const DETECT_SURFACES = [
+  { id: "claude-desktop", name: "Claude Desktop", app: true },
+  { id: "claude-code", name: "Claude Code CLI", app: false },
+  { id: "chatgpt-desktop", name: "ChatGPT / Codex app", app: true },
+  { id: "codex", name: "Codex CLI", app: false },
+];
+let lastDetection: string | null = null;
+
+/// Journal the apps and CLIs found on this machine, with versions and
+/// paths — once per change, so rescans that find the same set stay quiet.
+function logDetection(scan: ScanReport): void {
+  const lines = DETECT_SURFACES.map((s) => {
+    const c = scan.clients.find((x) => x.id === s.id);
+    const found = s.app ? !!c?.appInstalled : !!c?.cliPath;
+    const version = s.app ? c?.appVersion : c?.cliVersion;
+    const path = s.app ? c?.appPath : c?.cliPath;
+    const name = `${s.name}${found && version ? ` v${version}` : ""}`;
+    return { client: s.id, found, message: found && path ? `${name} · ${path}` : name };
+  });
+  const key = JSON.stringify(lines);
+  if (key === lastDetection) return;
+  lastDetection = key;
+  logEvents(
+    ...lines.map(
+      (l): StepReport => ({
+        step: l.found ? "Detected" : "Not found",
+        client: l.client,
+        status: l.found ? "ok" : "skipped",
+        message: l.message,
+      })
+    )
+  );
 }
 
 // --- State ---
@@ -461,6 +545,8 @@ const sessionStartMs = Date.now();
 /// the final report's steps are authoritative and replace them.
 let liveLogCount = 0;
 let restartNeeded: string[] = [];
+let restartTimer: ReturnType<typeof setTimeout> | undefined;
+const RESTART_BANNER_MS = 60_000;
 let fatalError: string | null = null;
 let loaded = false;
 const scanErrors = new Map<string, string>();
@@ -549,17 +635,30 @@ function cellButton(card: KitCard, scan: ScanReport, kind: string, id: string, c
   const states = itemsFor(scan, kind, id, col.surfaces);
   const status = aggregate(states);
   const key = ["cell", card.kit.id, kind, id, col.id].join(SEP);
-  const breakdown = states
-    .map((s) => {
-      const meta = [s.version ? `v${s.version}` : "", s.updatedAtMs ? fmtDate(s.updatedAtMs) : ""]
-        .filter(Boolean)
-        .join(" · ");
-      return (
-        tipRow(esc(SURFACE_LABEL[s.client] ?? s.client), esc(s.status.replace(/-/g, " "))) +
-        `<div class="tip-sub">${meta ? `${esc(meta)} · ` : ""}${esc(s.detail)}</div>`
-      );
-    })
-    .join("");
+  const breakdown =
+    states
+      .map((s) => {
+        const meta = [s.version ? `v${s.version}` : "", s.updatedAtMs ? fmtDate(s.updatedAtMs) : ""]
+          .filter(Boolean)
+          .join(" · ");
+        const where = WHERE_KEY[`${kind}:${s.client}`];
+        const note =
+          s.note?.kind === "foreign"
+            ? t("noteForeign").replace("{id}", s.note.value)
+            : s.note?.kind === "no-cowork-profile"
+              ? t("noteNoCoworkProfile")
+              : "";
+        return (
+          tipRow(esc(SURFACE_LABEL[s.client] ?? s.client), esc(s.status.replace(/-/g, " "))) +
+          `<div class="tip-sub">${meta ? `<div>${esc(meta)}</div>` : ""}<div>${[
+            where ? esc(t(where)) : "",
+            s.path ? `<span class="tip-path">${escPath(s.path)}</span>` : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}</div>${note ? `<div>${esc(note)}</div>` : ""}</div>`
+        );
+      })
+      .join("") + chatgptRow(scan, states, col);
   let chip: string;
   let hint = "";
   if (busy.has(key)) {
@@ -582,6 +681,17 @@ function cellButton(card: KitCard, scan: ScanReport, kind: string, id: string, c
   return body ? tip(chip, body) : chip;
 }
 
+/// The ChatGPT app has no config of its own: it sees whatever Codex has.
+function chatgptRow(scan: ScanReport, states: ItemState[], col: Column): string {
+  const app = scan.clients.find((c) => c.id === "chatgpt-desktop")?.appInstalled;
+  const codex = states.find((s) => s.client === "codex");
+  if (col.id !== "openai" || !app || !codex || codex.status === "client-unavailable") return "";
+  return (
+    tipRow("ChatGPT / Codex app", esc(codex.status.replace(/-/g, " "))) +
+    `<div class="tip-sub">${esc(t("sharesCodex"))}</div>`
+  );
+}
+
 function installedAnywhere(scan: ScanReport, kind: string, id: string): boolean {
   return scan.items.some((i) => i.kind === kind && i.id === id && i.status === "installed");
 }
@@ -601,14 +711,14 @@ function renderFooterStatus(): string {
     {
       label: "Anthropic",
       surfaces: [
-        { name: "Claude Cowork / Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: "", version: appVersionOf("claude-desktop") },
+        { name: "Claude Desktop", found: byId("claude-desktop")?.appInstalled ?? false, path: byId("claude-desktop")?.appPath ?? "", version: appVersionOf("claude-desktop") },
         { name: "Claude Code CLI", found: !!cliOf("claude-code"), path: cliOf("claude-code"), version: versionOf("claude-code") },
       ],
     },
     {
       label: "OpenAI",
       surfaces: [
-        { name: "ChatGPT / Codex app", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: "", version: appVersionOf("chatgpt-desktop") },
+        { name: "ChatGPT / Codex app", found: byId("chatgpt-desktop")?.appInstalled ?? false, path: byId("chatgpt-desktop")?.appPath ?? "", version: appVersionOf("chatgpt-desktop") },
         { name: "Codex CLI", found: !!cliOf("codex"), path: cliOf("codex"), version: versionOf("codex") },
       ],
     },
@@ -764,13 +874,18 @@ function renderRows(card: KitCard, scan: ScanReport): string {
       const id = `${p.name}@${kit.marketplaceName}`;
       const cells = COLUMNS.map((c) => `<div class="col-cell">${cellButton(card, scan, "plugin", id, c)}</div>`).join("");
       const installs = scan.items.filter((i) => i.kind === "plugin" && i.id === id && i.version);
-      const version = installs[0]?.version ?? p.version;
-      const updated = installs.map((i) => i.updatedAtMs ?? 0).reduce((a, b) => Math.max(a, b), 0);
-      const meta = [version ? `v${version}` : "", updated ? fmtDate(updated) : ""].filter(Boolean).join(" · ");
+      const newest = installs.reduce<ItemState | undefined>(
+        (a, b) => (!a || (b.updatedAtMs ?? 0) > (a.updatedAtMs ?? 0) ? b : a),
+        undefined
+      );
+      const version = newest?.version ?? p.version;
+      const meta = [version ? `v${version}` : "", newest?.updatedAtMs ? fmtDate(newest.updatedAtMs) : ""]
+        .filter(Boolean)
+        .join(" · ");
       return `<div class="row">
         ${selCell(kit.id, "plugin", id)}
         <div>
-          <div class="item-name">${tip(esc(p.displayName ?? p.name), `<div>${esc(id)}</div>${meta ? `<div class="tip-sub">${esc(meta)}</div>` : ""}`)}
+          <div class="item-name"><span>${esc(p.displayName ?? p.name)}</span>${meta ? `<span class="meta">${esc(meta)}</span>` : ""}
             <span class="item-actions">${removeAction(kit.id, scan, "plugin", id)}</span>
           </div>
           <div class="item-sub">${esc(p.description)}</div>
@@ -1188,6 +1303,8 @@ async function rescanAll(): Promise<void> {
       scanErrors.set(card.kit.id, String(e));
     }
   }
+  const first = scans.values().next().value as ScanReport | undefined;
+  if (first) logDetection(first);
   render();
 }
 
@@ -1201,7 +1318,7 @@ async function install(kitId: string): Promise<void> {
     const report = await invoke<InstallReport>("install_kit", { kitId });
     if (liveLogCount) logSteps.splice(-liveLogCount);
     logEvents(...report.steps);
-    restartNeeded = report.restartNeeded;
+    showRestart(report.restartNeeded);
     scans.set(kitId, report.scan);
     await loadKits();
   } catch (e) {
@@ -1211,10 +1328,17 @@ async function install(kitId: string): Promise<void> {
   render();
 }
 
-function mergeRestart(names: string[]): void {
+/// Show the restart banner for these apps; it hides itself after a minute.
+function showRestart(names: string[]): void {
   for (const name of names) {
     if (!restartNeeded.includes(name)) restartNeeded.push(name);
   }
+  if (!restartNeeded.length) return;
+  clearTimeout(restartTimer);
+  restartTimer = setTimeout(() => {
+    restartNeeded = [];
+    render();
+  }, RESTART_BANNER_MS);
 }
 
 /// Run a scoped install or removal. `busyKey` marks a single cell as
@@ -1238,7 +1362,7 @@ async function applyScoped(
         ? await invoke<InstallReport>("install_items", { kitId, clients, items })
         : await invoke<InstallReport>("remove_items", { kitId, clients, items: items ?? [] });
     logEvents(...report.steps);
-    mergeRestart(report.restartNeeded);
+    showRestart(report.restartNeeded);
     scans.set(kitId, report.scan);
   } catch (e) {
     logEvents({
@@ -1382,7 +1506,7 @@ async function removeItem(key: string): Promise<void> {
   try {
     const report = await invoke<InstallReport>("remove_item", { kitId, kind, id });
     logEvents(...report.steps);
-    restartNeeded = report.restartNeeded;
+    showRestart(report.restartNeeded);
     scans.set(kitId, report.scan);
   } catch (e) {
     logEvents({ step: `Remove ${id}`, client: "crewkit", status: "failed", message: String(e) });
@@ -1458,6 +1582,7 @@ async function main(): Promise<void> {
   const stored = await invoke<EventLogFile>("load_event_log").catch(() => null);
   if (stored) {
     logSteps = stored.entries.filter((e) => e && typeof e.atMs === "number");
+    lastDetection = stored.detected ?? null;
     if (stored.appVersion && stored.appVersion !== __APP_VERSION__) {
       logEvents({
         step: "App update",

@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::adapter::Adapter;
 use crate::bridge::{self, AuthState};
 use crate::cli;
+use crate::cowork;
 use crate::detect::{detect_all, DetectedClient};
 use crate::error::Result;
 use crate::fsops::{self, Snapshotter};
@@ -196,8 +197,10 @@ impl Engine {
         let marketplace_dir = crewkit_dir
             .join("marketplace")
             .join(&self.kit.marketplace_name);
-        let stage_needed =
-            plugins_pass && (scope.wants_client("claude-code") || scope.wants_client("codex"));
+        let stage_needed = plugins_pass
+            && ["claude-code", "claude-desktop", "codex"]
+                .iter()
+                .any(|c| scope.wants_client(c));
         if stage_needed {
             match marketplace::stage(
                 &self.kit,
@@ -517,6 +520,92 @@ impl Engine {
             }
         }
 
+        // 3b. Claude Cowork: plugins go into its own local plugin store —
+        //     Cowork does not read Claude Code's ~/.claude plugins.
+        let mut desktop_changed = false;
+        if plugins_pass && scope.wants_client("claude-desktop") {
+            let profiles = cowork::profiles(&self.paths);
+            if !client("claude-desktop").is_some_and(|c| c.app_installed) {
+                push(
+                    skipped("Cowork plugins", "claude-desktop", "Claude.app not found"),
+                    &mut steps,
+                );
+            } else if profiles.is_empty() {
+                push(
+                    skipped(
+                        "Cowork plugins",
+                        "claude-desktop",
+                        "open Cowork once so it creates its profile, then install again",
+                    ),
+                    &mut steps,
+                );
+            }
+            for profile in &profiles {
+                let mkt = &self.kit.marketplace_name;
+                match cowork::sync_marketplace(profile, mkt, &marketplace_dir) {
+                    Ok(()) => push(
+                        ok_step(
+                            "Register marketplace",
+                            "claude-desktop",
+                            &profile.marketplace_dir(mkt).display().to_string(),
+                        ),
+                        &mut steps,
+                    ),
+                    Err(e) => {
+                        push(
+                            failed("Register marketplace", "claude-desktop", &e.to_string()),
+                            &mut steps,
+                        );
+                        continue;
+                    }
+                }
+                for plugin in wanted_plugins.iter().copied() {
+                    let plugin_id = self.kit.plugin_id(plugin);
+                    let staged = staged_plugin_version(&marketplace_dir, &plugin.name)
+                        .unwrap_or_else(|| "0.0.0".into());
+                    let current = cowork::installed(profile, &plugin_id).map(|(v, _)| v);
+                    let mut step_name = format!("Install plugin {plugin_id}");
+                    match current {
+                        Some(v) if v == staged && cowork::enabled(profile, &plugin_id) => {
+                            push(
+                                skipped(
+                                    &step_name,
+                                    "claude-desktop",
+                                    &format!("already installed (v{v})"),
+                                ),
+                                &mut steps,
+                            );
+                            continue;
+                        }
+                        Some(v) if v != staged => {
+                            step_name = format!("Update plugin {plugin_id} to v{staged}");
+                        }
+                        _ => {}
+                    }
+                    match cowork::install_plugin(profile, mkt, &plugin.name, &staged) {
+                        Ok(()) => {
+                            state
+                                .plugins
+                                .insert(ManagedState::key("claude-desktop", &plugin_id));
+                            desktop_changed = true;
+                            push(
+                                ok_step(
+                                    &step_name,
+                                    "claude-desktop",
+                                    "enabled for new Cowork sessions",
+                                ),
+                                &mut steps,
+                            );
+                        }
+                        Err(e) => push(
+                            failed(&step_name, "claude-desktop", &e.to_string()),
+                            &mut steps,
+                        ),
+                    }
+                }
+            }
+        }
+
         // 4. Codex: plugins via CLI; MCP written directly into config.toml
         //    (`codex mcp add` can hang on its post-write OAuth probe) — so
         //    a machine that uses Codex only through the ChatGPT / Codex
@@ -714,7 +803,6 @@ impl Engine {
 
         // 5. Claude Desktop: its local config is stdio-only, so it gets the
         //    same crewkit-bridge entries as everyone else.
-        let mut desktop_changed = false;
         let desktop = client("claude-desktop");
         let desktop_wanted = scope.wants_client("claude-desktop") && mcp_pass;
         if desktop_wanted && desktop.map(|c| c.app_installed).unwrap_or(false) && bridge_ok {
@@ -823,7 +911,7 @@ impl Engine {
                 .cloned()
                 .collect();
             for plugin in &retired_plugins {
-                let (c, x) = self.remove_plugin_inner(
+                let (c, x, d) = self.remove_plugin_inner(
                     plugin,
                     &retired_items,
                     &clients,
@@ -833,6 +921,7 @@ impl Engine {
                 );
                 claude_changed |= c;
                 codex_changed |= x;
+                desktop_changed |= d;
             }
             let retired_servers: Vec<McpServer> = self
                 .kit
@@ -924,11 +1013,12 @@ impl Engine {
                         .ok_or_else(|| {
                             crate::error::Error::Invalid(format!("unknown plugin: {id}"))
                         })?;
-                    let (c, x) = self.remove_plugin_inner(
+                    let (c, x, d) = self.remove_plugin_inner(
                         plugin, &items, &clients, &mut state, targets, &mut emit,
                     );
                     claude_changed |= c;
                     codex_changed |= x;
+                    desktop_changed |= d;
                 }
                 "mcp" => {
                     let server = self
@@ -974,8 +1064,8 @@ impl Engine {
         })
     }
 
-    /// Uninstall a plugin from both ecosystems via their CLIs.
-    /// Returns (claude_changed, codex_changed).
+    /// Uninstall a plugin from Claude Code and Codex via their CLIs and from
+    /// Cowork's plugin store. Returns (claude, codex, desktop) change flags.
     fn remove_plugin_inner(
         &self,
         plugin: &KitPlugin,
@@ -984,13 +1074,14 @@ impl Engine {
         state: &mut ManagedState,
         targets: Option<&HashSet<String>>,
         emit: &mut dyn FnMut(StepReport),
-    ) -> (bool, bool) {
+    ) -> (bool, bool, bool) {
         let plugin_id = self.kit.plugin_id(plugin);
         let env = self.paths.cli_env();
         let client = |id: &str| clients.iter().find(|c| c.id == id);
         let wants = |id: &str| targets.is_none_or(|t| t.contains(id));
         let mut claude_changed = false;
         let mut codex_changed = false;
+        let mut desktop_changed = false;
 
         if let Some(cli) =
             client("claude-code").and_then(|c| c.cli_path.clone().filter(|_| wants("claude-code")))
@@ -1038,7 +1129,31 @@ impl Engine {
             }
         }
 
-        (claude_changed, codex_changed)
+        if wants("claude-desktop") && client("claude-desktop").is_some_and(|c| c.app_installed) {
+            let step = format!("Remove plugin {plugin_id}");
+            let mut removed = false;
+            for profile in cowork::profiles(&self.paths) {
+                match cowork::remove_plugin(&profile, &self.kit.marketplace_name, &plugin.name) {
+                    Ok(done) => removed |= done,
+                    Err(e) => emit(failed(&step, "claude-desktop", &e.to_string())),
+                }
+            }
+            if removed {
+                state
+                    .plugins
+                    .remove(&ManagedState::key("claude-desktop", &plugin_id));
+                desktop_changed = true;
+                emit(ok_step(
+                    &step,
+                    "claude-desktop",
+                    "removed from Cowork's plugin store",
+                ));
+            } else {
+                emit(skipped(&step, "claude-desktop", "not installed"));
+            }
+        }
+
+        (claude_changed, codex_changed, desktop_changed)
     }
 
     /// Remove an MCP server's bridge entries from every client and drop

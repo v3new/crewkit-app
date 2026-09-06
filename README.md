@@ -12,7 +12,8 @@ CrewKit does not automate UI clicks and never touches OAuth tokens. It uses only
 
 | Mechanism | Client | How |
 |---|---|---|
-| Plugins | Claude Code / Cowork | staged local marketplace + `claude plugin marketplace add` / `claude plugin install` |
+| Plugins | Claude Code | staged local marketplace + `claude plugin marketplace add` / `claude plugin install` |
+| Plugins | Claude Cowork | the same staged marketplace copied into Cowork's own plugin store (`cowork_plugins/`) and enabled in its `cowork_settings.json` |
 | Plugins | Codex / ChatGPT Desktop | the same staged marketplace + `codex plugin marketplace add` / `codex plugin add` |
 | MCP servers | every client | one identical stdio entry per client: `crewkit-bridge <server-id>` |
 
