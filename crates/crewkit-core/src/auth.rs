@@ -12,6 +12,7 @@
 //!   `WWW-Authenticate` challenge from the 401 that sent it here
 //!   (`AuthSession::for_resource`).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -26,11 +27,64 @@ use sha2::{Digest, Sha256};
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// A renewal is two HTTP calls; a lock older than this belongs to a
+/// process that died holding it.
+const RENEWAL_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Callback ports tried in order. A stable redirect URI is what lets one
+/// registered OAuth client serve every later login, so the user is not
+/// sent through a consent screen each time.
+const CALLBACK_PORTS: [u16; 8] = [33418, 33419, 33420, 33421, 33422, 33423, 33424, 33425];
+
 /// Product token every outbound authorization request identifies itself
 /// with; the proxy keeps its own for the MCP traffic it forwards.
 const USER_AGENT: &str = concat!("crewkit/", env!("CARGO_PKG_VERSION"));
 
 type Result<T> = std::result::Result<T, String>;
+
+/// What a stored session can answer with: the tokens, or why not.
+type SessionResult<T> = std::result::Result<T, SessionError>;
+
+/// Why a stored session could not produce a token. Only `Rejected` means
+/// the session is really over and the user has to sign in again.
+enum SessionError {
+    Missing,
+    Rejected(String),
+    /// Network, DNS, TLS, a 5xx. Clients start with the machine, often
+    /// before the network is up, and that must not cost a browser tab.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::Missing => write!(f, "no session stored"),
+            SessionError::Rejected(why) => write!(f, "the server refused the session: {why}"),
+            SessionError::Unavailable(why) => write!(f, "authorization server unreachable: {why}"),
+        }
+    }
+}
+
+/// A refused grant ends the session; anything else is the network or the
+/// server having a moment.
+fn classify(error: ureq::Error) -> SessionError {
+    match error {
+        ureq::Error::Status(code, response) if code < 500 && code != 429 => {
+            let detail = response.into_string().unwrap_or_default();
+            let detail: String = detail.chars().take(200).collect();
+            SessionError::Rejected(format!("HTTP {code}: {detail}"))
+        }
+        other => SessionError::Unavailable(other.to_string()),
+    }
+}
+
+/// An OAuth client registered once and reused for every later login.
+#[derive(Clone, Serialize, Deserialize)]
+struct RegisteredClient {
+    client_id: String,
+    registration_endpoint: String,
+    redirect_uris: Vec<String>,
+}
 
 /// Discovery/registration/token calls get a hard timeout — a silent
 /// network hang here would freeze a login while it holds the lock.
@@ -62,6 +116,12 @@ impl Tokens {
             None => true,
         }
     }
+}
+
+/// Whether a stored session can renew itself. Without a refresh token the
+/// server will ask the user to sign in again once this one runs out.
+pub fn session_renews(stored: &str) -> bool {
+    serde_json::from_str::<Tokens>(stored).is_ok_and(|tokens| tokens.refresh_token.is_some())
 }
 
 pub struct AuthSession {
@@ -115,6 +175,21 @@ impl AuthSession {
         self.auth_dir.join(format!("{}.lock", self.session_id))
     }
 
+    fn renewal_lock_path(&self) -> PathBuf {
+        self.auth_dir
+            .join(format!("{}.renewal.lock", self.session_id))
+    }
+
+    /// Machine-wide: one login tab is open at a time, whichever server
+    /// asked for it.
+    fn browser_lock_path(&self) -> PathBuf {
+        self.auth_dir.join("browser.lock")
+    }
+
+    fn clients_path(&self) -> PathBuf {
+        self.auth_dir.join("clients.json")
+    }
+
     pub fn has_tokens(&self) -> bool {
         self.load_tokens().is_some()
     }
@@ -132,42 +207,55 @@ impl AuthSession {
             .map_err(|e| e.to_string())
     }
 
-    /// A bearer token ready to use. Refreshes when stale; when there is
-    /// no session at all and `interactive` is allowed, runs the browser
-    /// flow (deduplicated across processes — several clients starting at
-    /// once must produce ONE browser tab, not one each).
+    /// A bearer token ready to use. Renews when stale; when the session
+    /// is over and `interactive` is allowed, runs the browser flow
+    /// (deduplicated across processes — several clients starting at once
+    /// must produce ONE browser tab, not one each).
     pub fn access_token(&self, interactive: bool) -> Result<String> {
-        if let Some(token) = self.silent_access_token() {
-            return Ok(token);
+        match self.usable_tokens() {
+            Ok(tokens) => Ok(tokens.access_token),
+            // A server we cannot reach has not logged anyone out: a
+            // browser tab would not help and nobody asked for one.
+            Err(SessionError::Unavailable(why)) => Err(why),
+            Err(_) if interactive => self.interactive_login(false).map(|t| t.access_token),
+            Err(_) => Err(self.sign_in_first()),
+        }
+    }
+
+    /// A bearer token from the cache, renewed when stale — never a
+    /// browser tab. `None` means the caller has to ask the user to sign in.
+    pub fn silent_access_token(&self) -> Option<String> {
+        self.usable_tokens().ok().map(|t| t.access_token)
+    }
+
+    /// The stored session, renewed when its access token has gone stale.
+    fn usable_tokens(&self) -> SessionResult<Tokens> {
+        let tokens = self.load_tokens().ok_or(SessionError::Missing)?;
+        if tokens.access_is_fresh() {
+            return Ok(tokens);
+        }
+        self.renew(&tokens)
+    }
+
+    /// Replace an access token the server rejected before it expired on
+    /// paper. Nothing is written until the replacement is in hand — a
+    /// failed attempt must not spoil a session that still works.
+    pub fn reauthorize(&self, interactive: bool) -> Result<String> {
+        if let Some(tokens) = self.load_tokens() {
+            match self.renew(&tokens) {
+                Ok(renewed) => return Ok(renewed.access_token),
+                Err(SessionError::Unavailable(why)) => return Err(why),
+                Err(_) => {}
+            }
         }
         if !interactive {
-            return Err(format!(
-                "not authorized for `{}` — sign in first",
-                self.session_id
-            ));
+            return Err(self.sign_in_first());
         }
         self.interactive_login(false).map(|t| t.access_token)
     }
 
-    /// A bearer token from the cache, refreshed when stale — never a
-    /// browser tab. `None` means the caller has to ask the user to sign in.
-    pub fn silent_access_token(&self) -> Option<String> {
-        let tokens = self.load_tokens()?;
-        if tokens.access_is_fresh() {
-            return Some(tokens.access_token);
-        }
-        let refreshed = self.refresh(&tokens).ok()?;
-        self.save_tokens(&refreshed).ok()?;
-        Some(refreshed.access_token)
-    }
-
-    /// Force-invalidate the access token (after a 401) and get a new one.
-    pub fn reauthorize(&self, interactive: bool) -> Result<String> {
-        if let Some(mut tokens) = self.load_tokens() {
-            tokens.expires_at = Some(0);
-            let _ = self.save_tokens(&tokens);
-        }
-        self.access_token(interactive)
+    fn sign_in_first(&self) -> String {
+        format!("not authorized for `{}` — sign in first", self.session_id)
     }
 
     /// Drop the cached session: best-effort server-side revocation
@@ -178,6 +266,7 @@ impl AuthSession {
             self.try_revoke(&tokens);
         }
         let _ = std::fs::remove_file(self.lock_path());
+        self.forget_client();
         Ok(crate::bridge::session::delete(
             &self.crewkit_dir,
             &self.session_id,
@@ -215,20 +304,52 @@ impl AuthSession {
     /// they wait for whichever flow the user completes.
     pub fn interactive_login(&self, preempt: bool) -> Result<Tokens> {
         std::fs::create_dir_all(&self.auth_dir).map_err(|e| e.to_string())?;
-        match FileLock::acquire(self.lock_path()) {
-            Some(_lock) => self.run_browser_flow(),
+        let _login = match FileLock::acquire(self.lock_path(), LOGIN_TIMEOUT) {
+            Some(lock) => lock,
             None if preempt => {
                 eprintln!(
                     "crewkit: a login for `{}` is already in progress elsewhere — taking over",
                     self.session_id
                 );
-                let _lock = FileLock::steal(self.lock_path());
-                self.run_browser_flow()
+                FileLock::steal(self.lock_path())
             }
             // Another process is already showing the browser tab — wait
             // for the tokens it produces instead of opening a second one.
-            None => self.wait_for_other_login(),
+            None => return self.wait_for_other_login(),
+        };
+        match self.wait_for_browser_turn(preempt)? {
+            Turn::Ours(_turn) => self.run_browser_flow(),
+            Turn::AlreadyDone(tokens) => Ok(tokens),
         }
+    }
+
+    /// Sessions that were created together end together, so servers queue
+    /// for the one tab the machine shows at a time instead of flooding
+    /// the screen. An explicit login jumps the queue — the user asked for
+    /// a tab now.
+    fn wait_for_browser_turn(&self, preempt: bool) -> Result<Turn> {
+        let path = self.browser_lock_path();
+        if let Some(turn) = FileLock::acquire(path.clone(), LOGIN_TIMEOUT) {
+            return Ok(Turn::Ours(turn));
+        }
+        if preempt {
+            return Ok(Turn::Ours(FileLock::steal(path)));
+        }
+        eprintln!(
+            "crewkit: another sign-in is open — `{}` waits its turn",
+            self.session_id
+        );
+        let deadline = Instant::now() + LOGIN_TIMEOUT;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(500));
+            if let Some(tokens) = self.load_tokens().filter(Tokens::access_is_fresh) {
+                return Ok(Turn::AlreadyDone(tokens));
+            }
+            if let Some(turn) = FileLock::acquire(path.clone(), LOGIN_TIMEOUT) {
+                return Ok(Turn::Ours(turn));
+            }
+        }
+        Err("timed out waiting for another sign-in to finish".into())
     }
 
     fn wait_for_other_login(&self) -> Result<Tokens> {
@@ -260,12 +381,11 @@ impl AuthSession {
 
         // Bind the callback listener first so the exact redirect URI is
         // known before the client is registered.
-        let listener =
-            TcpListener::bind("127.0.0.1:0").map_err(|e| format!("cannot bind callback: {e}"))?;
+        let listener = bind_callback()?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-        let client_id = self.register_client(&endpoints, &redirect_uri)?;
+        let client_id = self.client_id(&endpoints, &redirect_uri)?;
 
         let verifier = random_b64url(48);
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -309,7 +429,12 @@ impl AuthSession {
                 ("code_verifier", &verifier),
                 ("resource", &resource),
             ])
-            .map_err(|e| format!("token exchange failed: {e}"))?;
+            .map_err(|e| {
+                // The client we authorized as is the likeliest suspect;
+                // the next login registers a fresh one.
+                self.forget_client();
+                format!("token exchange failed: {e}")
+            })?;
         let body: Value = response
             .into_json()
             .map_err(|e| format!("token exchange returned invalid JSON: {e}"))?;
@@ -320,12 +445,82 @@ impl AuthSession {
         Ok(tokens)
     }
 
-    fn refresh(&self, tokens: &Tokens) -> Result<Tokens> {
+    /// Renew the session, once per machine. A refresh token is
+    /// single-use: a second caller presenting the same one looks like a
+    /// stolen token, and the server answers by revoking the whole
+    /// session. So whoever takes the lock talks to the server, and
+    /// everyone else reads what it stored.
+    fn renew(&self, stale: &Tokens) -> SessionResult<Tokens> {
+        let _ = std::fs::create_dir_all(&self.auth_dir);
+        let Some(_lock) = FileLock::acquire(self.renewal_lock_path(), RENEWAL_TIMEOUT) else {
+            return self.wait_for_renewal(stale);
+        };
+        if let Some(renewed) = self.renewed_elsewhere(stale) {
+            return Ok(renewed);
+        }
+        let renewed = self.refresh_twice(stale).inspect_err(|error| {
+            eprintln!("crewkit: could not renew `{}`: {error}", self.session_id);
+            if matches!(error, SessionError::Rejected(_)) {
+                self.forget_client();
+            }
+        })?;
+        self.save_tokens(&renewed)
+            .map_err(SessionError::Unavailable)?;
+        eprintln!("crewkit: renewed `{}`", self.session_id);
+        Ok(renewed)
+    }
+
+    /// One retry, because a client launched with the machine can beat its
+    /// own network by a second or two.
+    fn refresh_twice(&self, tokens: &Tokens) -> SessionResult<Tokens> {
+        match self.refresh(tokens) {
+            Err(SessionError::Unavailable(_)) => {
+                std::thread::sleep(Duration::from_secs(2));
+                self.refresh(tokens)
+            }
+            result => result,
+        }
+    }
+
+    /// The stored session, when another process has already replaced the
+    /// one we are holding.
+    fn renewed_elsewhere(&self, stale: &Tokens) -> Option<Tokens> {
+        self.load_tokens()
+            .filter(|current| current.access_token != stale.access_token)
+            .filter(Tokens::access_is_fresh)
+    }
+
+    fn wait_for_renewal(&self, stale: &Tokens) -> SessionResult<Tokens> {
+        let deadline = Instant::now() + RENEWAL_TIMEOUT;
+        let mut polls: u32 = 0;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            polls += 1;
+            let holder_done = !self.renewal_lock_path().exists();
+            // Reading the session shells out to the credential store, so
+            // look once a second — or the moment the holder lets go.
+            if holder_done || polls.is_multiple_of(4) {
+                if let Some(renewed) = self.renewed_elsewhere(stale) {
+                    return Ok(renewed);
+                }
+            }
+            if holder_done {
+                break;
+            }
+        }
+        // Whoever held the lock has logged why it failed; this caller just
+        // steps aside rather than presenting the same refresh token again.
+        Err(SessionError::Unavailable(format!(
+            "another process is renewing `{}`",
+            self.session_id
+        )))
+    }
+
+    fn refresh(&self, tokens: &Tokens) -> SessionResult<Tokens> {
         let refresh_token = tokens
             .refresh_token
-            .as_deref()
-            .ok_or("no refresh token")?
-            .to_string();
+            .clone()
+            .ok_or_else(|| SessionError::Rejected("the server issued no refresh token".into()))?;
         let response = http()
             .post(&tokens.token_endpoint)
             .send_form(&[
@@ -334,14 +529,18 @@ impl AuthSession {
                 ("client_id", &tokens.client_id),
                 ("resource", &tokens.resource),
             ])
-            .map_err(|e| format!("refresh failed: {e}"))?;
-        let body: Value = response.into_json().map_err(|e| e.to_string())?;
-        let mut refreshed = self.tokens_from_response(
-            &body,
-            &tokens.token_endpoint,
-            &tokens.client_id,
-            &tokens.resource,
-        )?;
+            .map_err(classify)?;
+        let body: Value = response
+            .into_json()
+            .map_err(|e| SessionError::Unavailable(e.to_string()))?;
+        let mut refreshed = self
+            .tokens_from_response(
+                &body,
+                &tokens.token_endpoint,
+                &tokens.client_id,
+                &tokens.resource,
+            )
+            .map_err(SessionError::Rejected)?;
         // Servers may omit the refresh token on rotation — keep the old one.
         if refreshed.refresh_token.is_none() {
             refreshed.refresh_token = Some(refresh_token);
@@ -562,15 +761,72 @@ impl AuthSession {
         Err("timed out waiting for the browser authorization".into())
     }
 
-    fn register_client(&self, endpoints: &AuthEndpoints, redirect_uri: &str) -> Result<String> {
+    /// The OAuth client to authorize as: the one registered earlier when
+    /// it still fits this server and callback, a fresh one otherwise.
+    /// Registering per login would mean a consent screen every time and a
+    /// pile of abandoned clients on the authorization server.
+    fn client_id(&self, endpoints: &AuthEndpoints, redirect_uri: &str) -> Result<String> {
         let registration_endpoint = endpoints
             .registration_endpoint
             .as_deref()
             .ok_or("server does not support dynamic client registration")?;
+        let known = self.stored_client().filter(|client| {
+            client.registration_endpoint == registration_endpoint
+                && client.redirect_uris.iter().any(|uri| uri == redirect_uri)
+        });
+        if let Some(client) = known {
+            return Ok(client.client_id);
+        }
+        let redirect_uris = callback_uris(redirect_uri);
+        let client_id = self.register_client(endpoints, registration_endpoint, &redirect_uris)?;
+        self.store_client(&RegisteredClient {
+            client_id: client_id.clone(),
+            registration_endpoint: registration_endpoint.to_string(),
+            redirect_uris,
+        });
+        Ok(client_id)
+    }
+
+    fn stored_client(&self) -> Option<RegisteredClient> {
+        let text = std::fs::read_to_string(self.clients_path()).ok()?;
+        serde_json::from_str::<BTreeMap<String, RegisteredClient>>(&text)
+            .ok()?
+            .remove(&self.session_id)
+    }
+
+    fn store_client(&self, client: &RegisteredClient) {
+        self.write_clients(|clients| {
+            clients.insert(self.session_id.clone(), client.clone());
+        });
+    }
+
+    fn forget_client(&self) {
+        self.write_clients(|clients| {
+            clients.remove(&self.session_id);
+        });
+    }
+
+    fn write_clients(&self, edit: impl FnOnce(&mut BTreeMap<String, RegisteredClient>)) {
+        let mut clients = std::fs::read_to_string(self.clients_path())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        edit(&mut clients);
+        if let Ok(text) = serde_json::to_string_pretty(&clients) {
+            let _ = std::fs::write(self.clients_path(), text);
+        }
+    }
+
+    fn register_client(
+        &self,
+        endpoints: &AuthEndpoints,
+        registration_endpoint: &str,
+        redirect_uris: &[String],
+    ) -> Result<String> {
         let mut registration = serde_json::json!({
             "client_name": "CrewKit",
             "client_uri": "https://github.com/v3new/crewkit-app",
-            "redirect_uris": [redirect_uri],
+            "redirect_uris": redirect_uris,
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
@@ -608,6 +864,37 @@ enum Callback {
     Code(String),
     /// A concurrent login for the same server finished first.
     OtherLoginWon(Tokens),
+}
+
+/// The outcome of queueing for the machine's one login tab.
+enum Turn {
+    Ours(FileLock),
+    /// The wait ended because the session arrived by other means.
+    AlreadyDone(Tokens),
+}
+
+/// Prefer a well-known callback port, so the registered OAuth client
+/// stays reusable; a random one is the fallback when all are taken.
+fn bind_callback() -> Result<TcpListener> {
+    for port in CALLBACK_PORTS {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
+        }
+    }
+    TcpListener::bind("127.0.0.1:0").map_err(|e| format!("cannot bind callback: {e}"))
+}
+
+/// Register every well-known port, not just the one bound now: the next
+/// login may land on a different one and must still fit this client.
+fn callback_uris(bound: &str) -> Vec<String> {
+    let mut uris: Vec<String> = CALLBACK_PORTS
+        .iter()
+        .map(|port| format!("http://127.0.0.1:{port}/callback"))
+        .collect();
+    if !uris.iter().any(|uri| uri == bound) {
+        uris.push(bound.to_string());
+    }
+    uris
 }
 
 /// Pull the `resource_metadata` URL out of a `WWW-Authenticate` header,
@@ -722,14 +1009,14 @@ fn html_escape(input: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Cross-process login lock: the holder runs the browser flow, everyone
-/// else waits for the tokens file. Stale locks (crashed process) expire.
+/// Cross-process lock: the holder does the work, everyone else waits for
+/// what it stores. Stale locks (crashed process) expire.
 struct FileLock {
     path: PathBuf,
 }
 
 impl FileLock {
-    fn acquire(path: PathBuf) -> Option<Self> {
+    fn acquire(path: PathBuf, stale_after: Duration) -> Option<Self> {
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -749,11 +1036,11 @@ impl FileLock {
                     .unwrap_or(false);
                 let expired = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
-                    .map(|t| t.elapsed().unwrap_or_default() > LOGIN_TIMEOUT)
+                    .map(|t| t.elapsed().unwrap_or_default() > stale_after)
                     .unwrap_or(true);
                 if !holder_alive || expired {
                     let _ = std::fs::remove_file(&path);
-                    return Self::acquire(path);
+                    return Self::acquire(path, stale_after);
                 }
                 None
             }
@@ -902,7 +1189,7 @@ fn open_browser(url: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::resource_metadata_of;
+    use super::*;
 
     #[test]
     fn reads_the_resource_metadata_url_from_a_challenge() {
@@ -913,5 +1200,114 @@ mod tests {
             Some("https://kits.example.com/.well-known/oauth-protected-resource/kit")
         );
         assert_eq!(resource_metadata_of("Bearer realm=\"kit\""), None);
+    }
+
+    fn status(code: u16) -> SessionError {
+        classify(ureq::Error::Status(
+            code,
+            ureq::Response::new(code, "Status", "{}").unwrap(),
+        ))
+    }
+
+    /// A refused grant is the one case that costs the user a browser tab,
+    /// so everything else must classify as reachable-again-later.
+    #[test]
+    fn only_a_refused_grant_ends_the_session() {
+        assert!(matches!(status(400), SessionError::Rejected(_)));
+        assert!(matches!(status(401), SessionError::Rejected(_)));
+        assert!(matches!(status(429), SessionError::Unavailable(_)));
+        assert!(matches!(status(502), SessionError::Unavailable(_)));
+    }
+
+    #[test]
+    fn a_registered_client_covers_every_well_known_port() {
+        let uris = callback_uris("http://127.0.0.1:33418/callback");
+
+        assert_eq!(uris.len(), CALLBACK_PORTS.len());
+        assert!(uris.contains(&"http://127.0.0.1:33425/callback".to_string()));
+    }
+
+    /// All well-known ports taken: the login still works, and the client
+    /// is registered for the odd port too.
+    #[test]
+    fn a_fallback_port_is_registered_alongside_them() {
+        let uris = callback_uris("http://127.0.0.1:51234/callback");
+
+        assert_eq!(uris.len(), CALLBACK_PORTS.len() + 1);
+        assert!(uris.contains(&"http://127.0.0.1:51234/callback".to_string()));
+    }
+
+    #[test]
+    fn a_session_without_a_refresh_token_does_not_renew() {
+        let with = r#"{"access_token":"a","refresh_token":"r","expires_at":null,
+            "token_endpoint":"https://e/t","client_id":"c","resource":"https://e"}"#;
+        let without = r#"{"access_token":"a","refresh_token":null,"expires_at":null,
+            "token_endpoint":"https://e/t","client_id":"c","resource":"https://e"}"#;
+
+        assert!(session_renews(with));
+        assert!(!session_renews(without));
+        assert!(!session_renews("not json"));
+    }
+
+    /// Two processes hitting a stale session at the same second: the
+    /// second must not present the same single-use refresh token.
+    #[test]
+    fn only_one_process_renews_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = AuthSession::for_mcp(dir.path(), "srv", "https://e/mcp");
+        std::fs::create_dir_all(&session.auth_dir).unwrap();
+        let stale = Tokens {
+            access_token: "old".into(),
+            refresh_token: Some("r".into()),
+            expires_at: Some(0),
+            token_endpoint: "https://e/token".into(),
+            client_id: "c".into(),
+            resource: "https://e/mcp".into(),
+        };
+
+        let held = FileLock::acquire(session.renewal_lock_path(), RENEWAL_TIMEOUT);
+        assert!(held.is_some());
+        let lock_path = session.renewal_lock_path();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = std::fs::remove_file(lock_path);
+        });
+
+        assert!(matches!(
+            session.renew(&stale),
+            Err(SessionError::Unavailable(_))
+        ));
+    }
+
+    /// The waiter takes the token the holder stored instead of asking the
+    /// server for one of its own.
+    #[test]
+    fn a_renewal_elsewhere_is_picked_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("crewkit-selftest-{}", std::process::id());
+        let session = AuthSession::for_mcp(dir.path(), &id, "https://e/mcp");
+        let stale = Tokens {
+            access_token: "old".into(),
+            refresh_token: Some("r".into()),
+            expires_at: Some(0),
+            token_endpoint: "https://e/token".into(),
+            client_id: "c".into(),
+            resource: "https://e/mcp".into(),
+        };
+
+        assert!(session.renewed_elsewhere(&stale).is_none());
+
+        let renewed = Tokens {
+            access_token: "new".into(),
+            expires_at: Some(now_unix() + 3600),
+            ..stale.clone()
+        };
+        session.save_tokens(&renewed).unwrap();
+
+        assert_eq!(
+            session.renewed_elsewhere(&stale).map(|t| t.access_token),
+            Some("new".to_string())
+        );
+        let _ = session.logout();
     }
 }

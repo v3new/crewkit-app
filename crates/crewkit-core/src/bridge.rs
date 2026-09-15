@@ -89,6 +89,9 @@ pub fn is_bridge_command(command: Option<&str>) -> bool {
 pub struct AuthState {
     pub id: String,
     pub authorized: bool,
+    /// Whether the session renews itself. A server that issues no refresh
+    /// token will send the user back through the browser when it expires.
+    pub renews: bool,
 }
 
 /// Which servers already have a cached CrewKit-level session.
@@ -97,9 +100,13 @@ pub fn auth_status(kit: &Kit, crewkit_dir: &Path) -> Vec<AuthState> {
     // they are absent here and the UI offers no authorize step.
     kit.active_mcp_servers()
         .filter(|s| s.uses_oauth())
-        .map(|s| AuthState {
-            id: s.id.clone(),
-            authorized: session::load(crewkit_dir, &s.id).is_some(),
+        .map(|s| {
+            let session = session::load(crewkit_dir, &s.id);
+            AuthState {
+                id: s.id.clone(),
+                renews: session.as_deref().is_some_and(crate::auth::session_renews),
+                authorized: session.is_some(),
+            }
         })
         .collect()
 }

@@ -79,7 +79,7 @@ interface ItemState {
 interface ScanReport {
   clients: DetectedClient[];
   items: ItemState[];
-  auth: { id: string; authorized: boolean }[];
+  auth: { id: string; authorized: boolean; renews: boolean }[];
 }
 
 type StepStatus = "ok" | "skipped" | "failed";
@@ -150,6 +150,10 @@ const STRINGS: Record<string, Record<string, string>> = {
     kitUnavailable: "Kit unavailable",
     signIn: "Sign in",
     kitNeedsSignIn: "This kit is published for a signed-in audience — sign in to download it",
+    needSignIn: "Servers waiting for sign-in: {n}",
+    signingIn: "Signing in — {i} of {n}…",
+    later: "Later",
+    noRenewTip: "This server issues no renewal token, so it will ask for a sign-in again once the session ends.",
     emptyTitle: "No kits yet",
     emptyHint: "Paste a kit manifest URL from your publisher, or open a crewkit:// link.",
     mcpGroup: "MCP Servers",
@@ -227,6 +231,10 @@ const STRINGS: Record<string, Record<string, string>> = {
     kitUnavailable: "Кит недоступен",
     signIn: "Войти",
     kitNeedsSignIn: "Кит закрыт авторизацией — войдите, чтобы скачать его",
+    needSignIn: "Ожидают входа: {n}",
+    signingIn: "Вход — {i} из {n}…",
+    later: "Позже",
+    noRenewTip: "Этот сервер не выдаёт токен продления, поэтому попросит войти заново, когда сессия закончится.",
     emptyTitle: "Пока нет китов",
     emptyHint: "Вставьте URL манифеста от вашего издателя или откройте crewkit://-ссылку.",
     mcpGroup: "MCP-серверы",
@@ -304,6 +312,10 @@ const STRINGS: Record<string, Record<string, string>> = {
     kitUnavailable: "Kit no disponible",
     signIn: "Iniciar sesión",
     kitNeedsSignIn: "Este kit es privado: inicia sesión para descargarlo",
+    needSignIn: "Servidores pendientes de inicio de sesión: {n}",
+    signingIn: "Iniciando sesión — {i} de {n}…",
+    later: "Más tarde",
+    noRenewTip: "Este servidor no emite token de renovación, así que volverá a pedir inicio de sesión cuando termine la sesión.",
     emptyTitle: "Aún no hay kits",
     emptyHint: "Pega la URL del manifiesto de tu editor o abre un enlace crewkit://.",
     mcpGroup: "Servidores MCP",
@@ -381,6 +393,10 @@ const STRINGS: Record<string, Record<string, string>> = {
     kitUnavailable: "套件不可用",
     signIn: "登录",
     kitNeedsSignIn: "该套件需要登录后才能下载",
+    needSignIn: "等待登录的服务器：{n}",
+    signingIn: "正在登录 — 第 {i} 个，共 {n} 个…",
+    later: "稍后",
+    noRenewTip: "该服务器不签发续期令牌，会话结束后会再次要求登录。",
     emptyTitle: "还没有套件",
     emptyHint: "粘贴发布者提供的清单 URL，或打开 crewkit:// 链接。",
     mcpGroup: "MCP 服务器",
@@ -546,6 +562,11 @@ const sessionStartMs = Date.now();
 let liveLogCount = 0;
 let restartNeeded: string[] = [];
 let restartTimer: ReturnType<typeof setTimeout> | undefined;
+/// Servers an install left unauthorized. They are signed in one after
+/// another, so the browser never gets more than one tab at a time.
+let signInQueue: string[] = [];
+/// 1-based position of the sign-in running now; 0 while the queue idles.
+let signInAt = 0;
 const RESTART_BANNER_MS = 60_000;
 let fatalError: string | null = null;
 let loaded = false;
@@ -849,7 +870,9 @@ function renderRows(card: KitCard, scan: ScanReport): string {
       const auth = !authState
         ? ""
         : authState.authorized
-          ? `<span class="chip chip--ok">${t("authorized")}</span>
+          ? `${authState.renews
+               ? `<span class="chip chip--ok">${t("authorized")}</span>`
+               : tip(`<span class="chip chip--warn">${t("authorized")}</span>`, `<div>${esc(t("noRenewTip"))}</div>`)}
              ${actionLink("deauthorize hover-action", s.id, isBusy ? t("loggingOut") : t("logout"), isBusy)}`
           : installedAnywhere(scan, "mcp", s.id)
             ? actionLink("authorize", s.id, isBusy ? t("waitingBrowser") : t("authorize"), isBusy)
@@ -1111,6 +1134,7 @@ function render(): void {
     <main class="${selected.size ? "selecting" : ""}">
       ${appUpdate ? `<div class="banner">${esc(t("updateAvailable").replace("{v}", appUpdate))}<button id="install-update" class="banner-btn" ${updatingApp ? "disabled" : ""}>${updatingApp ? t("updating") : t("installUpdate")}</button>${appUpdateError ? ` ${esc(appUpdateError)}` : ""}</div>` : ""}
       ${restartNeeded.length ? `<div class="banner">${t("restart")} ${restartNeeded.map(esc).join(", ")} ${t("restartTail")}</div>` : ""}
+      ${renderSignIn()}
       ${kits.length === 0 ? `<div class="empty"><div class="empty-title">${t("emptyTitle")}</div><div class="empty-hint">${t("emptyHint")}</div></div>` : ""}
       ${kits.map(renderKitSection).join("")}
       ${renderAddKit()}
@@ -1137,6 +1161,11 @@ function render(): void {
 
   document.querySelector("#rescan")?.addEventListener("click", () => void rescanAll());
   document.querySelector("#install-update")?.addEventListener("click", () => void installAppUpdate());
+  document.querySelector("#sign-in-all")?.addEventListener("click", () => void runSignInQueue());
+  document.querySelector("#sign-in-later")?.addEventListener("click", () => {
+    signInQueue = [];
+    render();
+  });
   document.querySelector("#log-toggle")?.addEventListener("click", () => {
     logOpen = !logOpen;
     render();
@@ -1319,6 +1348,7 @@ async function install(kitId: string): Promise<void> {
     if (liveLogCount) logSteps.splice(-liveLogCount);
     logEvents(...report.steps);
     showRestart(report.restartNeeded);
+    showSignIn(report.scan);
     scans.set(kitId, report.scan);
     await loadKits();
   } catch (e) {
@@ -1326,6 +1356,50 @@ async function install(kitId: string): Promise<void> {
   }
   installing.delete(kitId);
   render();
+}
+
+/// Queue the sign-ins an install left pending, and offer them right
+/// there — the user has just clicked Install and expects us to be busy,
+/// which is the one moment a browser tab is not a surprise.
+function showSignIn(scan: ScanReport): void {
+  signInQueue = scan.auth
+    .filter((a) => !a.authorized && installedAnywhere(scan, "mcp", a.id))
+    .map((a) => a.id);
+}
+
+function renderSignIn(): string {
+  if (!signInQueue.length) return "";
+  const running = signInAt > 0;
+  const label = running
+    ? t("signingIn").replace("{i}", String(signInAt)).replace("{n}", String(signInQueue.length))
+    : t("signIn");
+  return `<div class="banner">${t("needSignIn").replace("{n}", String(signInQueue.length))}
+    <button id="sign-in-all" class="banner-btn" ${running ? "disabled" : ""}>${label}</button>
+    <button id="sign-in-later" class="banner-btn" ${running ? "disabled" : ""}>${t("later")}</button>
+  </div>`;
+}
+
+/// One server at a time: each sign-in waits for its own browser tab to
+/// come back before the next one opens.
+async function runSignInQueue(): Promise<void> {
+  const queue = signInQueue;
+  // The queue only shrinks once the run is over, so "2 of 3" keeps
+  // counting the batch the user started, not what is left of it.
+  let unfinished: string[] = [];
+  for (const [index, serverId] of queue.entries()) {
+    signInAt = index + 1;
+    render();
+    try {
+      await invoke("authorize", { serverId });
+    } catch (e) {
+      logEvents({ step: `authorize ${serverId}`, client: "crewkit", status: "failed", message: String(e) });
+      unfinished = queue.slice(index);
+      break;
+    }
+  }
+  signInQueue = unfinished;
+  signInAt = 0;
+  await rescanAll();
 }
 
 /// Show the restart banner for these apps; it hides itself after a minute.
@@ -1363,6 +1437,7 @@ async function applyScoped(
         : await invoke<InstallReport>("remove_items", { kitId, clients, items: items ?? [] });
     logEvents(...report.steps);
     showRestart(report.restartNeeded);
+    if (action === "install") showSignIn(report.scan);
     scans.set(kitId, report.scan);
   } catch (e) {
     logEvents({

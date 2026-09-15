@@ -27,7 +27,13 @@ side and Streamable HTTP on the other, and **owns the OAuth session at the CrewK
   dynamic client registration, authorization-code + PKCE in the system browser, refresh.
 - One login per server — the cached session is shared by Claude Code, Cowork, Claude
   Desktop, Codex and ChatGPT Desktop. No more logging in N clients × M servers.
-- Concurrent client startups produce **one** browser tab (cross-process login lock).
+- Concurrent client startups produce **one** browser tab, and only one tab is ever open at
+  a time machine-wide — servers whose sessions end together queue instead of piling up.
+- Sessions renew under a cross-process lock: a refresh token is single-use, so a second
+  process presenting the same one would read as a stolen token and cost the whole session.
+  A server that cannot be reached is a retry, never a browser tab.
+- The OAuth client is registered once per server and reused, so a later login is silent
+  instead of walking the user through the consent screen again.
 - Pure passthrough proxy: messages are forwarded verbatim (sessions, protocol version and
   SSE streams handled at the transport layer), so the bridge does not lag protocol changes.
 - Solves stdio-only clients for free: Claude Desktop's local config rejects remote HTTP
