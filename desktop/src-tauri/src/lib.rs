@@ -3,6 +3,8 @@ mod items;
 mod kits;
 mod updates;
 
+use std::sync::Mutex;
+
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -28,6 +30,15 @@ fn parse_add_link(url: &url::Url) -> Option<DeepLinkAdd> {
         channel: param("channel"),
         bundle: param("bundle"),
     })
+}
+
+/// The link the app was launched with, kept until the UI asks for it —
+/// an event emitted before the webview listens would be lost.
+struct PendingDeepLink(Mutex<Option<DeepLinkAdd>>);
+
+#[tauri::command]
+fn take_deep_link(state: tauri::State<'_, PendingDeepLink>) -> Option<DeepLinkAdd> {
+    state.0.lock().ok()?.take()
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -68,6 +79,8 @@ pub fn run() {
             items::authorize,
             items::deauthorize,
             items::update_in_progress,
+            items::take_notifications,
+            take_deep_link,
             updates::install_app_update,
             updates::update_now,
             events::load_event_log,
@@ -95,6 +108,13 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            let launched_with = app
+                .deep_link()
+                .get_current()
+                .ok()
+                .flatten()
+                .and_then(|urls| urls.iter().find_map(parse_add_link));
+            app.manage(PendingDeepLink(Mutex::new(launched_with)));
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
@@ -126,6 +146,7 @@ pub fn run() {
                     hide_to_tray(app);
                 }
             }
+            tauri::RunEvent::Exit => updates::release_app_lock(),
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}

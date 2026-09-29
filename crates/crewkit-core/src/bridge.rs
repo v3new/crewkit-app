@@ -37,8 +37,14 @@ pub fn install_bridge(source: &Path, crewkit_dir: &Path) -> Result<bool> {
     }
     #[cfg(windows)]
     {
-        let retired = dest.with_extension("old");
-        let _ = std::fs::remove_file(&retired);
+        if let Ok(entries) = std::fs::read_dir(dest.parent().unwrap_or(crewkit_dir)) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().contains(".old-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let retired = dest.with_extension(format!("old-{}", std::process::id()));
         let _ = std::fs::rename(&dest, &retired);
     }
     fsops::atomic_write(&dest, &bytes)?;

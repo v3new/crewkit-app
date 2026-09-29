@@ -88,14 +88,18 @@ impl UpdateState {
             std::thread::sleep(Duration::from_millis(50));
         };
         let mut state = Self::load(crewkit_dir)?;
+        let before = serde_json::to_string(&state).expect("update state serializes");
         let result = change(&mut state);
-        state.save(crewkit_dir)?;
+        if serde_json::to_string(&state).expect("update state serializes") != before {
+            state.save(crewkit_dir)?;
+        }
         Ok(result)
     }
 
     pub fn is_due(&self, now_unix: u64) -> bool {
         self.last_check_unix == 0
-            || now_unix.saturating_sub(self.last_check_unix) >= DUE_AFTER.as_secs()
+            || now_unix < self.last_check_unix
+            || now_unix - self.last_check_unix >= DUE_AFTER.as_secs()
     }
 
     pub fn notify(&mut self, event: Event) {
@@ -109,13 +113,17 @@ impl UpdateState {
         std::mem::take(&mut self.notifications)
     }
 
-    pub fn add_new_items(&mut self, kit: &str, items: &[ItemRef]) {
+    /// Returns the items not announced before.
+    pub fn add_new_items(&mut self, kit: &str, items: &[ItemRef]) -> Vec<ItemRef> {
         let known = self.new_items.entry(kit.to_string()).or_default();
+        let mut fresh = Vec::new();
         for item in items {
             if !known.contains(item) {
                 known.push(item.clone());
+                fresh.push(item.clone());
             }
         }
+        fresh
     }
 
     pub fn forget_installed(&mut self, kit: &str, installed: &[ItemRef]) {
@@ -144,6 +152,7 @@ mod tests {
         };
         assert!(!state.is_due(10_000 + 54 * 60));
         assert!(state.is_due(10_000 + 55 * 60));
+        assert!(state.is_due(9_000));
         assert!(UpdateState::default().is_due(0));
     }
 
@@ -151,7 +160,15 @@ mod tests {
     fn new_items_dedupe_and_forget() {
         let mut state = UpdateState::default();
         let item = ItemRef::plugin("a@mkt");
-        state.add_new_items("kit", &[item.clone(), item.clone()]);
+        assert_eq!(
+            state
+                .add_new_items("kit", &[item.clone(), item.clone()])
+                .len(),
+            1
+        );
+        assert!(state
+            .add_new_items("kit", std::slice::from_ref(&item))
+            .is_empty());
         assert_eq!(state.new_items["kit"].len(), 1);
         state.forget_installed("kit", &[item]);
         assert!(state.new_items["kit"].is_empty());

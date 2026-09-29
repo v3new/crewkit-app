@@ -199,9 +199,17 @@ pub fn load_cached(crewkit_dir: &Path, source: &KitSource) -> Result<Kit> {
     Ok(kit)
 }
 
-/// Re-fetch a kit, verify it against the pinned publisher key, refresh
-/// the cache and pin the key when the source was added without one.
+/// Re-fetch a kit, verify it against the pinned publisher key and
+/// refresh the cache.
 pub fn refresh(source: &KitSource, crewkit_dir: &Path, auth: Auth) -> Result<Kit> {
+    let kit = fetch_verified(source, crewkit_dir, auth)?;
+    write_cache(crewkit_dir, &kit)?;
+    Ok(kit)
+}
+
+/// Fetch and verify without touching the cache, pinning the key when the
+/// source was added without one.
+pub fn fetch_verified(source: &KitSource, crewkit_dir: &Path, auth: Auth) -> Result<Kit> {
     let fetched = fetch_kit(
         &source.source,
         source.pinned_key.as_deref(),
@@ -214,7 +222,6 @@ pub fn refresh(source: &KitSource, crewkit_dir: &Path, auth: Auth) -> Result<Kit
             source.id, fetched.kit.id
         )));
     }
-    write_cache(crewkit_dir, &fetched.kit)?;
     if source.pinned_key.is_none() {
         let mut registry = KitRegistry::load(crewkit_dir)?;
         if let Some(entry) = registry.kits.iter_mut().find(|k| k.id == source.id) {

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::Result;
-use crate::installer::{Engine, InstallScope, StepReport};
+use crate::installer::{Engine, InstallScope, StepReport, StepStatus};
 use crate::inventory::Status;
 use crate::kits::{self, Auth, KitRegistry, KitSource};
 use crate::lock::FileLock;
@@ -114,7 +114,8 @@ fn apply(
 ) -> Result<()> {
     let crewkit_dir = paths.crewkit_dir();
     let before = kits::load_cached(&crewkit_dir, source).ok();
-    let mut fresh = kits::refresh(source, &crewkit_dir, Auth::Silent)?;
+    let manifest = kits::fetch_verified(source, &crewkit_dir, Auth::Silent)?;
+    let mut fresh = manifest.clone();
     if let Some(bundle) = &source.bundle {
         fresh.apply_bundle(bundle)?;
     }
@@ -122,6 +123,7 @@ fn apply(
         outcome.diff = diff(before, &fresh);
     }
     if !outcome.diff.changes_installed() && trigger != Trigger::Manual {
+        kits::write_cache(&crewkit_dir, &manifest)?;
         return announce(&crewkit_dir, source, outcome, &[]);
     }
 
@@ -172,6 +174,10 @@ fn apply(
         })
         .collect();
     kits::report_install(&engine.kit, &crewkit_dir, &after);
+    let clean = !outcome.steps.iter().any(|s| s.status == StepStatus::Failed);
+    if clean {
+        kits::write_cache(&crewkit_dir, &manifest)?;
+    }
     announce(&crewkit_dir, source, outcome, &installed)
 }
 
@@ -181,10 +187,11 @@ fn announce(
     outcome: &KitOutcome,
     installed: &[ItemRef],
 ) -> Result<()> {
+    let applied = outcome.steps.iter().any(|s| s.status == StepStatus::Ok);
     UpdateState::modify(crewkit_dir, |state| {
-        state.add_new_items(&source.id, &outcome.diff.added);
+        let fresh = state.add_new_items(&source.id, &outcome.diff.added);
         state.forget_installed(&source.id, installed);
-        if !outcome.diff.updated.is_empty() && !outcome.steps.is_empty() {
+        if !outcome.diff.updated.is_empty() && applied {
             state.notify(Event::KitUpdated {
                 kit: source.id.clone(),
                 items: outcome
@@ -195,10 +202,10 @@ fn announce(
                     .collect(),
             });
         }
-        if !outcome.diff.added.is_empty() {
+        if !fresh.is_empty() {
             state.notify(Event::NewItems {
                 kit: source.id.clone(),
-                items: outcome.diff.added.clone(),
+                items: fresh,
             });
         }
         if !outcome.restart_needed.is_empty() {

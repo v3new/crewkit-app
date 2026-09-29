@@ -16,17 +16,34 @@ pub fn spawn_if_due(crewkit_dir: &Path, program: &Path) -> bool {
     spawn_detached(program)
 }
 
+fn reap(child: std::io::Result<std::process::Child>) -> bool {
+    match child {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(unix)]
 fn spawn_detached(program: &Path) -> bool {
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .arg("update")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .is_ok()
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    reap(command.spawn())
 }
 
 #[cfg(windows)]
@@ -45,7 +62,7 @@ fn spawn_detached(program: &Path) -> bool {
             .stderr(Stdio::null())
             .creation_flags(flags)
             .spawn();
-        if spawned.is_ok() {
+        if reap(spawned) {
             return true;
         }
     }

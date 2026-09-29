@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crewkit_core::kits::{self, Auth};
-use crewkit_core::{updater, InstallReport, InstallScope, ScanReport};
+use crewkit_core::updater::{self, ItemRef, Notification, UpdateState};
+use crewkit_core::{InstallReport, InstallScope, ScanReport};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 
@@ -19,6 +20,27 @@ pub fn with_update_lock<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T
 #[tauri::command]
 pub fn update_in_progress() -> bool {
     updater::lock_held(&crewkit_dir())
+}
+
+#[tauri::command]
+pub fn take_notifications() -> Result<Vec<Notification>, String> {
+    UpdateState::modify(&crewkit_dir(), UpdateState::take_notifications).map_err(|e| e.to_string())
+}
+
+/// An item the user just installed is no longer "new in the bundle".
+fn forget_new_items(kit_id: &str, scan: &ScanReport) {
+    let installed: Vec<ItemRef> = scan
+        .items
+        .iter()
+        .filter(|i| i.status == crewkit_core::inventory::Status::Installed)
+        .map(|i| ItemRef {
+            kind: i.kind.clone(),
+            id: i.id.clone(),
+        })
+        .collect();
+    let _ = UpdateState::modify(&crewkit_dir(), |state| {
+        state.forget_installed(kit_id, &installed)
+    });
 }
 
 #[tauri::command]
@@ -63,6 +85,7 @@ pub async fn install_kit(app: AppHandle, kit_id: String) -> Result<InstallReport
                 .map_err(|e| e.to_string())
         })?;
         kits::report_install(&engine.kit, &dir, &report.scan);
+        forget_new_items(&kit_id, &report.scan);
         Ok(report)
     })
     .await
@@ -101,6 +124,7 @@ pub async fn install_items(
                 .map_err(|e| e.to_string())
         })?;
         kits::report_install(&engine.kit, &crewkit_dir(), &report.scan);
+        forget_new_items(&kit_id, &report.scan);
         Ok(report)
     })
     .await

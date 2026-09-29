@@ -1360,17 +1360,8 @@ async function main(): Promise<void> {
     showRestart(event.payload.restartNeeded);
     render();
   });
-  await listen<Notification[]>("notifications", (event) => onNotifications(event.payload));
-  await listen<DeepLinkAdd>("deep-link-add-kit", (event) => {
-    resetAddKit();
-    addKitOpen = true;
-    addKitUrl = event.payload.url;
-    addKitChannel = event.payload.channel ?? "stable";
-    addKitBundle = event.payload.bundle ?? "";
-    addKitPreset = event.payload.channel !== null || event.payload.bundle !== null;
-    render();
-    document.querySelector("#add-kit-url")?.scrollIntoView({ behavior: "smooth" });
-  });
+  await listen("notifications-ready", () => void pullNotifications());
+  await listen<DeepLinkAdd>("deep-link-add-kit", (event) => openDeepLink(event.payload));
 
   try {
     await rescanAll();
@@ -1380,6 +1371,25 @@ async function main(): Promise<void> {
   }
   backgroundBusy = await invoke<boolean>("update_in_progress").catch(() => false);
   if (backgroundBusy) render();
+  await pullNotifications();
+  const launchedWith = await invoke<DeepLinkAdd | null>("take_deep_link").catch(() => null);
+  if (launchedWith) openDeepLink(launchedWith);
+}
+
+async function pullNotifications(): Promise<void> {
+  const pending = await invoke<Notification[]>("take_notifications").catch(() => []);
+  if (pending.length) onNotifications(pending);
+}
+
+function openDeepLink(link: DeepLinkAdd): void {
+  resetAddKit();
+  addKitOpen = true;
+  addKitUrl = link.url;
+  addKitChannel = link.channel ?? "stable";
+  addKitBundle = link.bundle ?? "";
+  addKitPreset = link.channel !== null || link.bundle !== null;
+  render();
+  document.querySelector("#add-kit-url")?.scrollIntoView({ behavior: "smooth" });
 }
 
 // Any click outside an open column menu closes it (standard pull-down

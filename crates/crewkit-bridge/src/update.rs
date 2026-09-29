@@ -21,16 +21,16 @@ pub fn spawn_if_due(paths: &Paths) {
 
 pub fn run(paths: &Paths) -> Result<(), String> {
     let crewkit_dir = paths.crewkit_dir();
-    let mut log = std::fs::File::create(crewkit_dir.join("updater.log")).ok();
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crewkit_dir.join("updater.log"))
+        .ok();
     let mut line = |text: String| {
         if let Some(log) = log.as_mut() {
             let _ = writeln!(log, "{text}");
         }
     };
-    line(format!(
-        "crewkit-bridge {} update",
-        env!("CARGO_PKG_VERSION")
-    ));
     let report = updater::run(paths, Trigger::Bridge, None, |step| {
         line(format!(
             "{:?} {} {}: {}",
@@ -38,20 +38,22 @@ pub fn run(paths: &Paths) -> Result<(), String> {
         ));
     })
     .map_err(|e| e.to_string())?;
-    match report {
-        None => line("skipped: not due or another updater holds the lock".into()),
-        Some(report) => {
-            for kit in report.kits {
-                line(format!(
-                    "kit {}: updated {}, added {}, removed {}{}",
-                    kit.kit,
-                    kit.diff.updated.len(),
-                    kit.diff.added.len(),
-                    kit.diff.removed.len(),
-                    kit.error.map(|e| format!(" — {e}")).unwrap_or_default()
-                ));
-            }
-        }
+    let Some(report) = report else {
+        return Ok(());
+    };
+    line(format!(
+        "crewkit-bridge {} update",
+        env!("CARGO_PKG_VERSION")
+    ));
+    for kit in report.kits {
+        line(format!(
+            "kit {}: updated {}, added {}, removed {}{}",
+            kit.kit,
+            kit.diff.updated.len(),
+            kit.diff.added.len(),
+            kit.diff.removed.len(),
+            kit.error.map(|e| format!(" — {e}")).unwrap_or_default()
+        ));
     }
     match updater::update_app(&crewkit_dir) {
         Ok(Some(version)) => line(format!("app updated to {version}")),

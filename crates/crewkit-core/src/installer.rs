@@ -1021,7 +1021,8 @@ impl Engine {
         let mut snap = Snapshotter::new(&crewkit_dir);
         let mut state = ManagedState::load(&crewkit_dir)?;
         let clients = detect_all(&self.adapters, &self.paths);
-        let items = inventory(&self.kit, &self.paths, &state, &clients)?;
+        let mut items = inventory(&self.kit, &self.paths, &state, &clients)?;
+        items.extend(retired_inventory(&self.kit, &self.paths, &state, &clients)?);
         let mut steps: Vec<StepReport> = Vec::new();
         let (mut claude_changed, mut codex_changed, mut desktop_changed) = (false, false, false);
 

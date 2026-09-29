@@ -129,6 +129,9 @@ pub fn check_and_install(crewkit_dir: &Path) -> Result<Option<String>> {
     if !is_newer(&release.version, &app.version) {
         return Ok(None);
     }
+    let Some(_lock) = crate::updater::lock(crewkit_dir) else {
+        return Ok(None);
+    };
     if app_running(crewkit_dir) {
         UpdateState::modify(crewkit_dir, |state| {
             state.app_update_available = Some(release.version)
@@ -137,9 +140,15 @@ pub fn check_and_install(crewkit_dir: &Path) -> Result<Option<String>> {
     }
     let archive = download(&release.url, &crewkit_dir.join("downloads"))?;
     let bytes = std::fs::read(&archive).map_err(io_ctx("reading downloaded release"))?;
-    verify(&bytes, &release.signature)?;
-    install(&archive, &app.app_path)?;
+    let verified = verify(&bytes, &release.signature).and_then(|()| {
+        if app_running(crewkit_dir) {
+            Err(Error::Invalid("the app started meanwhile".into()))
+        } else {
+            install(&archive, &app.app_path)
+        }
+    });
     let _ = std::fs::remove_file(&archive);
+    verified?;
     bridge::install_bridge(&app.bridge_source, crewkit_dir)?;
     UpdateState::modify(crewkit_dir, |state| {
         state.app = Some(AppInfo {
@@ -157,7 +166,7 @@ pub fn check_and_install(crewkit_dir: &Path) -> Result<Option<String>> {
 fn download(url: &str, dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).map_err(io_ctx(format!("creating {}", dir.display())))?;
     let name = url.rsplit('/').next().unwrap_or("release");
-    let dest = dir.join(name);
+    let dest = dir.join(format!("{}-{name}", std::process::id()));
     let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(10 * 60))
         .build()
@@ -176,7 +185,7 @@ fn install(archive: &Path, app_path: &Path) -> Result<()> {
     let parent = app_path
         .parent()
         .ok_or_else(|| Error::Invalid(format!("{} has no parent", app_path.display())))?;
-    let staging = parent.join(".crewkit-update");
+    let staging = parent.join(format!(".crewkit-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(io_ctx(format!("creating {}", staging.display())))?;
     let output = crate::cli::run(

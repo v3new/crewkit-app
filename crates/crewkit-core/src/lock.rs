@@ -22,18 +22,28 @@ impl FileLock {
                 Some(Self { path })
             }
             Err(_) => {
-                let holder_alive = Self::holder_alive(&path);
-                let expired = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .map(|t| t.elapsed().unwrap_or_default() > stale_after)
-                    .unwrap_or(true);
-                if !holder_alive || expired {
-                    let _ = std::fs::remove_file(&path);
+                let stale = match Self::holder(&path) {
+                    Some(pid) => !process_alive(pid),
+                    None => std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .map(|t| t.elapsed().unwrap_or_default() > stale_after)
+                        .unwrap_or(true),
+                };
+                if stale && Self::reclaim(&path) {
                     return Self::acquire(path, stale_after);
                 }
                 None
             }
         }
+    }
+
+    /// Only the contender whose rename wins may retry; the others see the
+    /// lock as taken, which it is about to be.
+    fn reclaim(path: &std::path::Path) -> bool {
+        let claimed = path.with_extension(format!("stale.{}", std::process::id()));
+        let won = std::fs::rename(path, &claimed).is_ok();
+        let _ = std::fs::remove_file(&claimed);
+        won
     }
 
     pub fn holder(path: &std::path::Path) -> Option<u32> {

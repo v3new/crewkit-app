@@ -3,9 +3,12 @@
 //! a minute-by-minute look at what the bridge's updater did meanwhile.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use crewkit_core::bridge;
+use crewkit_core::lock::FileLock;
 use crewkit_core::updater::{self, AppInfo, Trigger, UpdateState, CHECK_INTERVAL};
 use crewkit_core::{Paths, StepReport};
 use serde::Serialize;
@@ -19,6 +22,17 @@ use crate::kits::{bridge_source, crewkit_dir};
 pub struct BackgroundReport {
     steps: Vec<StepReport>,
     restart_needed: Vec<String>,
+}
+
+/// Held while the app runs so the bridge's updater leaves it alone;
+/// released on exit so a stale pid never blocks offline updates.
+static APP_LOCK: Mutex<Option<FileLock>> = Mutex::new(None);
+static SELF_UPDATING: AtomicBool = AtomicBool::new(false);
+
+pub fn release_app_lock() {
+    if let Ok(mut lock) = APP_LOCK.lock() {
+        lock.take();
+    }
 }
 
 pub fn start(app: AppHandle) {
@@ -47,7 +61,9 @@ pub fn start(app: AppHandle) {
 /// closed, hold the "app is running" lock, and deploy this build's bridge.
 fn register(app: &AppHandle) -> Result<(), String> {
     let dir = crewkit_dir();
-    std::mem::forget(updater::hold_app_lock(&dir));
+    if let Ok(mut lock) = APP_LOCK.lock() {
+        *lock = updater::hold_app_lock(&dir);
+    }
     let source = bridge_source(app)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     UpdateState::modify(&dir, |state| {
@@ -117,46 +133,59 @@ pub async fn run_kits(app: &AppHandle, trigger: Trigger) {
     drain_notifications(app);
 }
 
+/// The UI pulls notifications itself once its listeners are up, so
+/// nothing announced while it was loading is lost.
 fn drain_notifications(app: &AppHandle) {
-    let taken = UpdateState::modify(&crewkit_dir(), UpdateState::take_notifications);
-    if let Ok(notifications) = taken {
-        if !notifications.is_empty() {
-            let _ = app.emit("notifications", notifications);
-        }
+    let pending = UpdateState::load(&crewkit_dir())
+        .map(|s| !s.notifications.is_empty())
+        .unwrap_or(false);
+    if pending {
+        let _ = app.emit("notifications-ready", ());
     }
 }
 
 /// Silent self-update: download, verify against the pinned key, install,
-/// and restart as soon as no install is writing into the clients.
+/// and restart — all while holding the update lock, so no install is
+/// writing into the clients when the process goes away.
 async fn self_update(app: &AppHandle) {
-    let Ok(updater) = app.updater() else { return };
-    let Ok(Some(update)) = updater.check().await else {
-        return;
-    };
-    let version = update.version.clone();
-    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-        let _ = app.emit("app-update-available", format!("{version}: {e}"));
+    if SELF_UPDATING.swap(true, Ordering::SeqCst) {
         return;
     }
+    if let Err(e) = apply_app_update(app).await {
+        let _ = app.emit("app-update-available", e);
+    }
+    SELF_UPDATING.store(false, Ordering::SeqCst);
+}
+
+async fn apply_app_update(app: &AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let version = update.version.clone();
     let dir = crewkit_dir();
-    let _ = tauri::async_runtime::spawn_blocking(move || wait_for_lock(&dir, 120)).await;
+    let lock = tauri::async_runtime::spawn_blocking(move || wait_for_lock(&dir, 120))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| format!("{version}: an install is still running"))?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("{version}: {e}"))?;
+    drop(lock);
     app.restart();
 }
 
 /// Retry of a failed silent update from the banner's button.
 #[tauri::command]
 pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("no update available")?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
-    app.restart();
+    if SELF_UPDATING.swap(true, Ordering::SeqCst) {
+        return Err("update already running".into());
+    }
+    let result = apply_app_update(&app).await;
+    SELF_UPDATING.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -189,6 +218,7 @@ async fn watch_state(app: AppHandle) {
             .unwrap_or(false);
         if pending {
             self_update(&app).await;
+            seen = modified(&state_path);
         }
     }
 }
