@@ -341,7 +341,7 @@ mod wincred_tests {
     #[test]
     fn credential_manager_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let id = format!("crewkit-selftest-{}", std::process::id());
+        let id = format!("crewkit-selftest-wincred-{}", std::process::id());
 
         session::save(tmp.path(), &id, "s3cret").unwrap();
         // The secret lives in the Credential Manager — nothing lands on disk.

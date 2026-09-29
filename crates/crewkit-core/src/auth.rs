@@ -1196,7 +1196,7 @@ mod tests {
     #[test]
     fn a_renewal_elsewhere_is_picked_up() {
         let dir = tempfile::tempdir().unwrap();
-        let id = format!("crewkit-selftest-{}", std::process::id());
+        let id = format!("crewkit-selftest-auth-{}", std::process::id());
         let session = AuthSession::for_mcp(dir.path(), &id, "https://e/mcp");
         let stale = Tokens {
             access_token: "old".into(),
