@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "crewkit-bridge"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "crewkit-core",
  "serde",
@@ -633,14 +633,14 @@ dependencies = [
 
 [[package]]
 name = "crewkit-cli"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "crewkit-core",
 ]
 
 [[package]]
 name = "crewkit-core"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "crewkit-desktop"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "crewkit-core",
  "serde",
