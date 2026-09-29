@@ -5,429 +5,22 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 /// Injected at build time from tauri.conf.json (see vite.config.ts).
 declare const __APP_VERSION__: string;
 
-// --- Types mirroring crewkit-core's serialized reports ---
-
-interface Kit {
-  id: string;
-  name: string;
-  version: string | null;
-  publisher: string;
-  publisherKey: string | null;
-  homepage: string | null;
-  marketplaceName: string;
-  channels: Record<string, string>;
-  telemetry: { endpoint: string; notice: string | null } | null;
-  bundles: { id: string; displayName: string | null; plugins: string[]; mcpServers: string[] }[];
-  mcpServers: {
-    id: string;
-    url: string;
-    displayName: string | null;
-    transport: string | null;
-    auth: string | null;
-    docs: string | null;
-    remove: boolean;
-    description: string;
-  }[];
-  plugins: {
-    name: string;
-    zip: string | null;
-    artifact: { url: string; sha256: string } | null;
-    version: string | null;
-    displayName: string | null;
-    remove: boolean;
-    description: string;
-  }[];
-}
-
-interface KitCard {
-  kit: Kit;
-  source: string;
-  channel: string;
-  bundle: string | null;
-  error: string | null;
-  /// Published behind a login, and this machine has no live session.
-  needsAuth: boolean;
-}
-
-interface DetectedClient {
-  id: string;
-  name: string;
-  appInstalled: boolean;
-  appPath: string | null;
-  appVersion: string | null;
-  cliPath: string | null;
-  cliVersion: string | null;
-  files: { key: string; path: string; exists: boolean }[];
-  restartRequired: boolean;
-  notes: string | null;
-  present: boolean;
-}
-
-type ItemStatus = "installed" | "installed-foreign" | "not-installed" | "client-unavailable";
-
-interface ItemState {
-  kind: "plugin" | "mcp";
-  id: string;
-  client: string;
-  status: ItemStatus;
-  path: string;
-  note?: { kind: "foreign"; value: string } | { kind: "no-cowork-profile" };
-  version: string | null;
-  updatedAtMs: number | null;
-}
-
-interface ScanReport {
-  clients: DetectedClient[];
-  items: ItemState[];
-  auth: { id: string; authorized: boolean; renews: boolean }[];
-}
-
-type StepStatus = "ok" | "skipped" | "failed";
-
-interface StepReport {
-  step: string;
-  client: string;
-  status: StepStatus;
-  message: string;
-}
-
-interface InstallReport {
-  steps: StepReport[];
-  restartNeeded: string[];
-  scan: ScanReport;
-}
-
-// --- Localization (English default; RU available) ---
-
-const STRINGS: Record<string, Record<string, string>> = {
-  en: {
-    rescan: "Rescan",
-    install: "Install kit",
-    installing: "Installing…",
-    addKit: "Add",
-    addKitToggle: "+ Add kit by URL",
-    addKitPlaceholder: "https://…/kit.json",
-    adding: "Verifying…",
-    cancel: "Cancel",
-    removeKit: "Remove kit",
-    removeKitConfirm: "Remove kit?",
-    everything: "Everything installed",
-    ofInstalled: "installed",
-    serversAuthorized: "authorized",
-    noClients: "No supported clients found",
-    installed: "Installed",
-    adopt: "Take over",
-    adoptHint: "Added outside CrewKit — click to take over management",
-    notInstalled: "Not installed",
-    authorized: "authorized",
-    authorize: "Authorize",
-    waitingBrowser: "Waiting for browser…",
-    logout: "Log out",
-    loggingOut: "Logging out…",
-    remove: "Remove",
-    removeConfirm: "Remove everywhere?",
-    removing: "Removing…",
-    details: "Details",
-    copyLog: "Copy",
-    copied: "Copied",
-    restart: "Restart",
-    restartTail: "to pick up the changes",
-    scanning: "Scanning this computer…",
-    updateAvailable: "CrewKit {v} is available",
-    installUpdate: "Update & restart",
-    updating: "Updating…",
-    telemetryNote: "Reports installs to the publisher",
-    telemetryWhat: "what is collected",
-    channel: "Channel",
-    bundle: "Bundle",
-    allItems: "All items",
-    signedBy: "signed · key pinned",
-    builtin: "built into the app",
-    found: "found",
-    notFound: "not found",
-    failedShort: "failed",
-    retry: "Retry",
-    kitUnavailable: "Kit unavailable",
-    signIn: "Sign in",
-    kitNeedsSignIn: "This kit is published for a signed-in audience — sign in to download it",
-    needSignIn: "Servers waiting for sign-in: {n}",
-    signingIn: "Signing in — {i} of {n}…",
-    later: "Later",
-    noRenewTip: "This server issues no renewal token, so it will ask for a sign-in again once the session ends.",
-    emptyTitle: "No kits yet",
-    emptyHint: "Paste a kit manifest URL from your publisher, or open a crewkit:// link.",
-    mcpGroup: "MCP Servers",
-    pluginGroup: "Plugins",
-    installShort: "Install",
-    removeQ: "Remove?",
-    installAllTo: "Install all to {app}",
-    removeAllFrom: "Remove all from {app}",
-    confirmAgain: "Click again to confirm",
-    selectedN: "{n} selected",
-    installToLabel: "Install to",
-    both: "Both",
-    clearSel: "Clear",
-    removeFrom: "Remove from {app}",
-    installToApp: "Install to {app}",
-    notSupported: "Not supported",
-    notSupportedTip: "Transport `{t}` needs a newer CrewKit version.",
-    wherePluginClaudeCode: "Plugin for the CLI and the Code tab",
-    whereMcpClaudeCode: "Server via CrewKit bridge, CLI and the Code tab",
-    wherePluginClaudeDesktop: "Plugin for Cowork sessions",
-    whereMcpClaudeDesktop: "Server via CrewKit bridge, Desktop chat and Cowork",
-    wherePluginCodex: "Plugin for Codex CLI and the ChatGPT app",
-    whereMcpCodex: "Server via CrewKit bridge, Codex CLI and the ChatGPT app",
-    sharesCodex: "shares the Codex config",
-    noteForeign: "`{id}` was added outside CrewKit",
-    noteNoCoworkProfile: "Open Cowork once so it creates its profile",
-  },
-  ru: {
-    rescan: "Обновить",
-    install: "Установить",
-    installing: "Установка…",
-    addKit: "Добавить",
-    addKitToggle: "+ Добавить кит по URL",
-    addKitPlaceholder: "https://…/kit.json",
-    adding: "Проверка…",
-    cancel: "Отмена",
-    removeKit: "Убрать кит",
-    removeKitConfirm: "Убрать кит?",
-    everything: "Всё установлено",
-    ofInstalled: "установлено",
-    serversAuthorized: "авторизовано",
-    noClients: "Клиенты не найдены",
-    installed: "Установлено",
-    adopt: "Взять на себя",
-    adoptHint: "Добавлено вне CrewKit — нажмите, чтобы CrewKit взял управление на себя",
-    notInstalled: "Не установлено",
-    authorized: "авторизован",
-    authorize: "Авторизовать",
-    waitingBrowser: "Ждём браузер…",
-    logout: "Выйти",
-    loggingOut: "Выходим…",
-    remove: "Удалить",
-    removeConfirm: "Удалить везде?",
-    removing: "Удаляем…",
-    details: "Детали",
-    copyLog: "Скопировать",
-    copied: "Скопировано",
-    restart: "Перезапустите",
-    restartTail: "чтобы подхватить изменения",
-    scanning: "Сканируем этот компьютер…",
-    updateAvailable: "Доступен CrewKit {v}",
-    installUpdate: "Обновить и перезапустить",
-    updating: "Обновляем…",
-    telemetryNote: "Сообщает издателю об установках",
-    telemetryWhat: "что собирается",
-    channel: "Канал",
-    bundle: "Набор",
-    allItems: "Все элементы",
-    signedBy: "подписан · ключ закреплён",
-    builtin: "встроен в приложение",
-    found: "найден",
-    notFound: "не найден",
-    failedShort: "с ошибкой",
-    retry: "Повторить",
-    kitUnavailable: "Кит недоступен",
-    signIn: "Войти",
-    kitNeedsSignIn: "Кит закрыт авторизацией — войдите, чтобы скачать его",
-    needSignIn: "Ожидают входа: {n}",
-    signingIn: "Вход — {i} из {n}…",
-    later: "Позже",
-    noRenewTip: "Этот сервер не выдаёт токен продления, поэтому попросит войти заново, когда сессия закончится.",
-    emptyTitle: "Пока нет китов",
-    emptyHint: "Вставьте URL манифеста от вашего издателя или откройте crewkit://-ссылку.",
-    mcpGroup: "MCP-серверы",
-    pluginGroup: "Плагины",
-    installShort: "Установить",
-    removeQ: "Удалить?",
-    installAllTo: "Установить всё в {app}",
-    removeAllFrom: "Удалить всё из {app}",
-    confirmAgain: "Нажмите ещё раз для подтверждения",
-    selectedN: "выбрано: {n}",
-    installToLabel: "Установить в",
-    both: "Оба",
-    clearSel: "Сбросить",
-    removeFrom: "Удалить из {app}",
-    installToApp: "Установить в {app}",
-    notSupported: "Не поддерживается",
-    notSupportedTip: "Транспорт `{t}` требует более новой версии CrewKit.",
-    wherePluginClaudeCode: "Плагин для CLI и вкладки Code",
-    whereMcpClaudeCode: "Сервер через CrewKit bridge, CLI и вкладка Code",
-    wherePluginClaudeDesktop: "Плагин для сессий Cowork",
-    whereMcpClaudeDesktop: "Сервер через CrewKit bridge, чат Desktop и Cowork",
-    wherePluginCodex: "Плагин для Codex CLI и приложения ChatGPT",
-    whereMcpCodex: "Сервер через CrewKit bridge, Codex CLI и приложение ChatGPT",
-    sharesCodex: "общий конфиг с Codex",
-    noteForeign: "`{id}` добавлен вне CrewKit",
-    noteNoCoworkProfile: "Откройте Cowork один раз, чтобы он создал профиль",
-  },
-  es: {
-    rescan: "Reescanear",
-    install: "Instalar kit",
-    installing: "Instalando…",
-    addKit: "Añadir",
-    addKitToggle: "+ Añadir kit por URL",
-    addKitPlaceholder: "https://…/kit.json",
-    adding: "Verificando…",
-    cancel: "Cancelar",
-    removeKit: "Quitar kit",
-    removeKitConfirm: "¿Quitar kit?",
-    everything: "Todo instalado",
-    ofInstalled: "instalado",
-    serversAuthorized: "autorizados",
-    noClients: "No se encontraron clientes compatibles",
-    installed: "Instalado",
-    adopt: "Gestionar",
-    adoptHint: "Añadido fuera de CrewKit — haz clic para que CrewKit lo gestione",
-    notInstalled: "No instalado",
-    authorized: "autorizado",
-    authorize: "Autorizar",
-    waitingBrowser: "Esperando al navegador…",
-    logout: "Cerrar sesión",
-    loggingOut: "Cerrando sesión…",
-    remove: "Eliminar",
-    removeConfirm: "¿Eliminar de todos?",
-    removing: "Eliminando…",
-    details: "Detalles",
-    copyLog: "Copiar",
-    copied: "Copiado",
-    restart: "Reinicia",
-    restartTail: "para aplicar los cambios",
-    scanning: "Escaneando este equipo…",
-    updateAvailable: "CrewKit {v} disponible",
-    installUpdate: "Actualizar y reiniciar",
-    updating: "Actualizando…",
-    telemetryNote: "Informa de instalaciones al editor",
-    telemetryWhat: "qué se recopila",
-    channel: "Canal",
-    bundle: "Paquete",
-    allItems: "Todo",
-    signedBy: "firmado · clave fijada",
-    builtin: "integrado en la app",
-    found: "encontrado",
-    notFound: "no encontrado",
-    failedShort: "con error",
-    retry: "Reintentar",
-    kitUnavailable: "Kit no disponible",
-    signIn: "Iniciar sesión",
-    kitNeedsSignIn: "Este kit es privado: inicia sesión para descargarlo",
-    needSignIn: "Servidores pendientes de inicio de sesión: {n}",
-    signingIn: "Iniciando sesión — {i} de {n}…",
-    later: "Más tarde",
-    noRenewTip: "Este servidor no emite token de renovación, así que volverá a pedir inicio de sesión cuando termine la sesión.",
-    emptyTitle: "Aún no hay kits",
-    emptyHint: "Pega la URL del manifiesto de tu editor o abre un enlace crewkit://.",
-    mcpGroup: "Servidores MCP",
-    pluginGroup: "Plugins",
-    installShort: "Instalar",
-    removeQ: "¿Quitar?",
-    installAllTo: "Instalar todo en {app}",
-    removeAllFrom: "Quitar todo de {app}",
-    confirmAgain: "Haz clic de nuevo para confirmar",
-    selectedN: "{n} seleccionados",
-    installToLabel: "Instalar en",
-    both: "Ambos",
-    clearSel: "Limpiar",
-    removeFrom: "Quitar de {app}",
-    installToApp: "Instalar en {app}",
-    notSupported: "No compatible",
-    notSupportedTip: "El transporte `{t}` requiere una versión más reciente de CrewKit.",
-    wherePluginClaudeCode: "Plugin para la CLI y la pestaña Code",
-    whereMcpClaudeCode: "Servidor vía CrewKit bridge, CLI y pestaña Code",
-    wherePluginClaudeDesktop: "Plugin para sesiones de Cowork",
-    whereMcpClaudeDesktop: "Servidor vía CrewKit bridge, chat de Desktop y Cowork",
-    wherePluginCodex: "Plugin para Codex CLI y la app de ChatGPT",
-    whereMcpCodex: "Servidor vía CrewKit bridge, Codex CLI y la app de ChatGPT",
-    sharesCodex: "comparte la configuración de Codex",
-    noteForeign: "`{id}` se añadió fuera de CrewKit",
-    noteNoCoworkProfile: "Abre Cowork una vez para que cree su perfil",
-  },
-  zh: {
-    rescan: "重新扫描",
-    install: "安装套件",
-    installing: "安装中…",
-    addKit: "添加",
-    addKitToggle: "+ 通过 URL 添加套件",
-    addKitPlaceholder: "https://…/kit.json",
-    adding: "验证中…",
-    cancel: "取消",
-    removeKit: "移除套件",
-    removeKitConfirm: "移除套件？",
-    everything: "全部已安装",
-    ofInstalled: "已安装",
-    serversAuthorized: "已授权",
-    noClients: "未找到支持的客户端",
-    installed: "已安装",
-    adopt: "接管",
-    adoptHint: "在 CrewKit 之外添加 — 点击由 CrewKit 接管",
-    notInstalled: "未安装",
-    authorized: "已授权",
-    authorize: "授权",
-    waitingBrowser: "等待浏览器…",
-    logout: "退出登录",
-    loggingOut: "正在退出…",
-    remove: "移除",
-    removeConfirm: "从所有客户端移除？",
-    removing: "移除中…",
-    details: "详情",
-    copyLog: "复制",
-    copied: "已复制",
-    restart: "请重启",
-    restartTail: "以应用更改",
-    scanning: "正在扫描此电脑…",
-    updateAvailable: "CrewKit {v} 已发布",
-    installUpdate: "更新并重启",
-    updating: "更新中…",
-    telemetryNote: "向发布者报告安装情况",
-    telemetryWhat: "收集内容",
-    channel: "通道",
-    bundle: "套装",
-    allItems: "全部",
-    signedBy: "已签名 · 密钥已固定",
-    builtin: "内置于应用",
-    found: "已找到",
-    notFound: "未找到",
-    failedShort: "失败",
-    retry: "重试",
-    kitUnavailable: "套件不可用",
-    signIn: "登录",
-    kitNeedsSignIn: "该套件需要登录后才能下载",
-    needSignIn: "等待登录的服务器：{n}",
-    signingIn: "正在登录 — 第 {i} 个，共 {n} 个…",
-    later: "稍后",
-    noRenewTip: "该服务器不签发续期令牌，会话结束后会再次要求登录。",
-    emptyTitle: "还没有套件",
-    emptyHint: "粘贴发布者提供的清单 URL，或打开 crewkit:// 链接。",
-    mcpGroup: "MCP 服务器",
-    pluginGroup: "插件",
-    installShort: "安装",
-    removeQ: "移除？",
-    installAllTo: "全部安装到 {app}",
-    removeAllFrom: "从 {app} 移除全部",
-    confirmAgain: "再次点击以确认",
-    selectedN: "已选 {n} 项",
-    installToLabel: "安装到",
-    both: "两者",
-    clearSel: "清除",
-    removeFrom: "从 {app} 移除",
-    installToApp: "安装到 {app}",
-    notSupported: "不支持",
-    notSupportedTip: "传输协议 `{t}` 需要更新版本的 CrewKit。",
-    wherePluginClaudeCode: "用于 CLI 和 Code 标签页的插件",
-    whereMcpClaudeCode: "通过 CrewKit bridge 的服务器，CLI 和 Code 标签页",
-    wherePluginClaudeDesktop: "用于 Cowork 会话的插件",
-    whereMcpClaudeDesktop: "通过 CrewKit bridge 的服务器，Desktop 聊天和 Cowork",
-    wherePluginCodex: "用于 Codex CLI 和 ChatGPT 应用的插件",
-    whereMcpCodex: "通过 CrewKit bridge 的服务器，Codex CLI 和 ChatGPT 应用",
-    sharesCodex: "与 Codex 共用配置",
-    noteForeign: "`{id}` 是在 CrewKit 之外添加的",
-    noteNoCoworkProfile: "请先打开一次 Cowork 以创建其配置",
-  },
-};
-
-let lang = localStorage.getItem("crewkit-lang") ?? "en";
-const t = (key: string): string => STRINGS[lang]?.[key] ?? STRINGS.en[key] ?? key;
+import { lang, setLang, t } from "./strings";
+import type {
+  BackgroundReport,
+  DeepLinkAdd,
+  DetectedClient,
+  InstallReport,
+  ItemRef,
+  ItemState,
+  ItemStatus,
+  KitCard,
+  KitPreview,
+  Notification,
+  ScanReport,
+  StepReport,
+} from "./types";
+import { describe, notify } from "./notify";
 
 // --- Presentation of the two ecosystems ---
 
@@ -578,6 +171,13 @@ let addKitOpen = false;
 let addKitUrl = "";
 let addingKit = false;
 let addKitError = "";
+let addKitPreview: KitPreview | null = null;
+let addKitChannel = "stable";
+let addKitBundle = "";
+/// A deep link already named the channel and bundle: no picker needed.
+let addKitPreset = false;
+/// Another process (the bridge's updater) is writing into the clients.
+let backgroundBusy = false;
 let logOpen = false;
 /// Transient "Copied" feedback on the log's copy button.
 let logCopied = false;
@@ -979,20 +579,14 @@ function renderKitSection(card: KitCard): string {
     card.source === "builtin"
       ? `<div>${t("builtin")}</div>`
       : `<div>${esc(card.source)}</div><div class="tip-sub">${t("signedBy")}</div>`;
-  const channels = Object.keys(kit.channels);
-  const channelSelect = channels.length
-    ? `<label class="sel">${t("channel")}
-        <select class="channel" data-arg="${esc(kit.id)}">
-          ${channels.map((c) => `<option value="${esc(c)}" ${c === card.channel ? "selected" : ""}>${esc(c)}</option>`).join("")}
-        </select></label>`
-    : "";
-  const bundleSelect = kit.bundles.length
-    ? `<label class="sel">${t("bundle")}
-        <select class="bundle" data-arg="${esc(kit.id)}">
-          <option value="">${t("allItems")}</option>
-          ${kit.bundles.map((b) => `<option value="${esc(b.id)}" ${b.id === card.bundle ? "selected" : ""}>${esc(b.displayName ?? b.id)}</option>`).join("")}
-        </select></label>`
-    : "";
+  const bundleName = kit.bundles.find((b) => b.id === card.bundle)?.displayName ?? card.bundle;
+  const choices = [
+    Object.keys(kit.channels).length ? `${t("channel")}: ${esc(card.channel)}` : "",
+    bundleName ? `${t("bundle")}: ${esc(bundleName)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const choiceMeta = choices ? `<span class="kit-meta">${choices}</span>` : "";
   const removeKitKey = `kit ${kit.id}`;
   const removeKit =
     card.source === "builtin"
@@ -1005,16 +599,18 @@ function renderKitSection(card: KitCard): string {
         kit.telemetry.notice ? ` · <a href="${esc(kit.telemetry.notice)}" target="_blank">${t("telemetryWhat")}</a>` : ""
       }</div>`
     : "";
-  const kitBusy = installing.has(kit.id) || working.has(kit.id);
+  const kitBusy = installing.has(kit.id) || working.has(kit.id) || backgroundBusy;
   const progress = kitBusy
-    ? `<div class="progress"><span class="spinner"></span>${esc(currentStep || t("installing"))}</div>`
+    ? `<div class="progress"><span class="spinner"></span>${esc(
+        backgroundBusy && !installing.has(kit.id) && !working.has(kit.id) ? t("backgroundUpdating") : currentStep || t("installing")
+      )}</div>`
     : "";
 
   return `<section class="kit">
     <div class="kit-head">
       ${tip(`<span class="kit-name-big">${esc(kit.name)}</span>`, sourceInfo)}
       <span class="kit-meta">${esc(kit.publisher)}${kit.version ? ` · v${esc(kit.version)}` : ""}</span>
-      ${channelSelect}${bundleSelect}
+      ${choiceMeta}
       <span class="spacer"></span>
       ${removeKit}
       <button class="tb-btn primary install" data-arg="${esc(kit.id)}" ${kitBusy ? "disabled" : ""}>
@@ -1022,18 +618,61 @@ function renderKitSection(card: KitCard): string {
       </button>
     </div>
     ${telemetry}${progress}
-    ${scan ? renderRows(card, scan) : `<div class="loading">${t("scanning")}</div>`}
+    ${scan ? renderNewItems(card, scan) + renderRows(card, scan) : `<div class="loading">${t("scanning")}</div>`}
   </section>`;
+}
+
+/// Items the publisher added to the chosen bundle after the kit was
+/// added: announced, never installed behind the user's back.
+function renderNewItems(card: KitCard, scan: ScanReport): string {
+  const fresh = card.newItems.filter((i) => !installedAnywhere(scan, i.kind, i.id));
+  if (!fresh.length) return "";
+  const kit = card.kit;
+  const label = (i: ItemRef) =>
+    i.kind === "mcp"
+      ? (kit.mcpServers.find((s) => s.id === i.id)?.displayName ?? i.id)
+      : (kit.plugins.find((p) => `${p.name}@${kit.marketplaceName}` === i.id)?.displayName ?? i.id.split("@")[0]);
+  return `<div class="new-items">
+    <span class="new-items-title">${t("newInBundle")}</span>
+    ${fresh
+      .map(
+        (i) =>
+          `<span class="new-item">${esc(label(i))}
+            <button class="chip chip--install new-item-install" data-arg="${esc([kit.id, i.kind, i.id].join(SEP))}" ${backgroundBusy ? "disabled" : ""}>${t("installShort")}</button>
+          </span>`
+      )
+      .join("")}
+  </div>`;
 }
 
 function renderAddKit(): string {
   if (!addKitOpen) {
     return `<button id="add-kit-toggle" class="add-kit-toggle">${t("addKitToggle")}</button>`;
   }
+  const preview = addKitPreview;
+  const options = preview
+    ? `<div class="add-kit-options">
+        <span class="add-kit-name">${esc(preview.name)} · ${esc(preview.publisher)}</span>
+        ${preview.channels.length
+          ? `<label class="sel">${t("channel")}
+              <select id="add-kit-channel">${preview.channels
+                .map((c) => `<option value="${esc(c)}" ${c === addKitChannel ? "selected" : ""}>${esc(c)}</option>`)
+                .join("")}</select></label>`
+          : ""}
+        ${preview.bundles.length
+          ? `<label class="sel">${t("bundle")}
+              <select id="add-kit-bundle">${preview.bundles
+                .map((b) => `<option value="${esc(b.id)}" ${b.id === addKitBundle ? "selected" : ""}>${esc(b.displayName ?? b.id)}</option>`)
+                .join("")}</select></label>`
+          : ""}
+      </div>`
+    : "";
   return `<div class="add-kit">
-    <input id="add-kit-url" type="text" placeholder="${t("addKitPlaceholder")}" value="${esc(addKitUrl)}" ${addingKit ? "disabled" : ""} />
-    <button id="add-kit-btn" class="tb-btn" ${addingKit || !addKitUrl.trim() ? "disabled" : ""}>${addingKit ? t("adding") : t("addKit")}</button>
+    <input id="add-kit-url" type="text" placeholder="${t("addKitPlaceholder")}" value="${esc(addKitUrl)}" ${addingKit || preview ? "disabled" : ""} />
+    <button id="add-kit-btn" class="tb-btn" ${addingKit || !addKitUrl.trim() ? "disabled" : ""}>${addingKit ? t("adding") : preview ? t("continue") : t("addKit")}</button>
     <button id="add-kit-cancel" class="link">${t("cancel")}</button>
+    ${preview ? `<div class="add-kit-hint">${t("chooseOptions")}</div>` : ""}
+    ${options}
     ${addKitError ? `<div class="add-kit-error">${esc(addKitError)}</div>` : ""}
   </div>`;
 }
@@ -1256,15 +895,20 @@ function render(): void {
   app.querySelectorAll<HTMLButtonElement>("button.kit-authorize").forEach((b) =>
     b.addEventListener("click", () => void kitAuthAction(b.dataset.arg!))
   );
-  app.querySelectorAll<HTMLSelectElement>("select.channel").forEach((s) =>
-    s.addEventListener("change", () => void changeChannel(s.dataset.arg!, s.value))
+  app.querySelectorAll<HTMLButtonElement>("button.new-item-install").forEach((b) =>
+    b.addEventListener("click", () => {
+      const [kitId, kind, id] = b.dataset.arg!.split(SEP);
+      void applyScoped("install", kitId, null, [{ kind, id }]);
+    })
   );
-  app.querySelectorAll<HTMLSelectElement>("select.bundle").forEach((s) =>
-    s.addEventListener("change", () => void changeBundle(s.dataset.arg!, s.value || null))
-  );
+  document.querySelector<HTMLSelectElement>("#add-kit-channel")?.addEventListener("change", (e) => {
+    addKitChannel = (e.target as HTMLSelectElement).value;
+  });
+  document.querySelector<HTMLSelectElement>("#add-kit-bundle")?.addEventListener("change", (e) => {
+    addKitBundle = (e.target as HTMLSelectElement).value;
+  });
   document.querySelector<HTMLSelectElement>("#lang-select")?.addEventListener("change", (e) => {
-    lang = (e.target as HTMLSelectElement).value;
-    localStorage.setItem("crewkit-lang", lang);
+    setLang((e.target as HTMLSelectElement).value);
     render();
   });
   document.querySelector("#add-kit-toggle")?.addEventListener("click", () => {
@@ -1273,8 +917,7 @@ function render(): void {
     document.querySelector<HTMLInputElement>("#add-kit-url")?.focus();
   });
   document.querySelector("#add-kit-cancel")?.addEventListener("click", () => {
-    addKitOpen = false;
-    addKitError = "";
+    resetAddKit();
     render();
   });
   const input = document.querySelector<HTMLInputElement>("#add-kit-url");
@@ -1285,7 +928,7 @@ function render(): void {
   input?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") void addKit();
     if (e.key === "Escape") {
-      addKitOpen = false;
+      resetAddKit();
       render();
     }
   });
@@ -1612,24 +1255,19 @@ async function removeKit(kitId: string): Promise<void> {
   }
 }
 
-async function changeChannel(kitId: string, channel: string): Promise<void> {
-  try {
-    await invoke("set_channel", { kitId, channel });
-  } catch (e) {
-    logEvents({ step: `Channel ${channel}`, client: "crewkit", status: "failed", message: String(e) });
-  }
-  await rescanAll();
+function resetAddKit(): void {
+  addKitOpen = false;
+  addKitUrl = "";
+  addKitError = "";
+  addKitPreview = null;
+  addKitChannel = "stable";
+  addKitBundle = "";
+  addKitPreset = false;
 }
 
-async function changeBundle(kitId: string, bundle: string | null): Promise<void> {
-  try {
-    await invoke("set_bundle", { kitId, bundle });
-  } catch (e) {
-    logEvents({ step: "Bundle", client: "crewkit", status: "failed", message: String(e) });
-  }
-  await rescanAll();
-}
-
+/// Adding a kit is two steps: verify the manifest and show the choices
+/// the publisher offers, then register it on the chosen channel and
+/// bundle. Both are fixed afterwards — re-add the kit to change them.
 async function addKit(): Promise<void> {
   const url = addKitUrl.trim();
   if (!url) return;
@@ -1637,16 +1275,40 @@ async function addKit(): Promise<void> {
   addKitError = "";
   render();
   try {
-    await invoke("add_kit", { url });
+    if (!addKitPreview) {
+      const preview = await invoke<KitPreview>("inspect_kit", { url });
+      const presetValid =
+        (preview.channels.length === 0 || preview.channels.includes(addKitChannel)) &&
+        (preview.bundles.length === 0 || preview.bundles.some((b) => b.id === addKitBundle));
+      const needsChoice = (preview.channels.length > 0 || preview.bundles.length > 0) && !(addKitPreset && presetValid);
+      if (needsChoice) {
+        addKitPreview = preview;
+        addKitChannel = preview.channels.includes(addKitChannel) ? addKitChannel : (preview.channels[0] ?? "stable");
+        addKitBundle = preview.bundles.some((b) => b.id === addKitBundle) ? addKitBundle : (preview.bundles[0]?.id ?? "");
+        addingKit = false;
+        render();
+        return;
+      }
+    }
+    await invoke("add_kit", { url, channel: addKitChannel, bundle: addKitBundle || null });
     logEvents({ step: "Add kit", client: "crewkit", status: "ok", message: url });
-    addKitUrl = "";
-    addKitOpen = false;
+    resetAddKit();
     await rescanAll();
   } catch (e) {
     logEvents({ step: "Add kit", client: "crewkit", status: "failed", message: String(e) });
     addKitError = String(e);
   }
   addingKit = false;
+  render();
+}
+
+function onNotifications(notifications: Notification[]): void {
+  for (const n of notifications) {
+    const { title, body } = describe(n);
+    logEvents({ step: title, client: "crewkit", status: "ok", message: body });
+    if (n.kind === "restart-needed") showRestart(n.clients);
+    void notify(n);
+  }
   render();
 }
 
@@ -1689,12 +1351,17 @@ async function main(): Promise<void> {
     appUpdate = event.payload;
     render();
   });
-  await listen<string>("deep-link-add-kit", (event) => {
-    addKitOpen = true;
-    addKitUrl = event.payload;
+  await listen<boolean>("background-update", (event) => {
+    backgroundBusy = event.payload;
     render();
-    document.querySelector("#add-kit-url")?.scrollIntoView({ behavior: "smooth" });
   });
+  await listen<BackgroundReport>("background-report", (event) => {
+    logEvents(...event.payload.steps);
+    showRestart(event.payload.restartNeeded);
+    render();
+  });
+  await listen("notifications-ready", () => void pullNotifications());
+  await listen<DeepLinkAdd>("deep-link-add-kit", (event) => openDeepLink(event.payload));
 
   try {
     await rescanAll();
@@ -1702,12 +1369,27 @@ async function main(): Promise<void> {
     fatalError = String(e);
     render();
   }
-  try {
-    appUpdate = await invoke<string | null>("check_app_update");
-    if (appUpdate) render();
-  } catch {
-    // offline is fine
-  }
+  backgroundBusy = await invoke<boolean>("update_in_progress").catch(() => false);
+  if (backgroundBusy) render();
+  await pullNotifications();
+  const launchedWith = await invoke<DeepLinkAdd | null>("take_deep_link").catch(() => null);
+  if (launchedWith) openDeepLink(launchedWith);
+}
+
+async function pullNotifications(): Promise<void> {
+  const pending = await invoke<Notification[]>("take_notifications").catch(() => []);
+  if (pending.length) onNotifications(pending);
+}
+
+function openDeepLink(link: DeepLinkAdd): void {
+  resetAddKit();
+  addKitOpen = true;
+  addKitUrl = link.url;
+  addKitChannel = link.channel ?? "stable";
+  addKitBundle = link.bundle ?? "";
+  addKitPreset = link.channel !== null || link.bundle !== null;
+  render();
+  document.querySelector("#add-kit-url")?.scrollIntoView({ behavior: "smooth" });
 }
 
 // Any click outside an open column menu closes it (standard pull-down

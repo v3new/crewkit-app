@@ -35,6 +35,18 @@ pub fn install_bridge(source: &Path, crewkit_dir: &Path) -> Result<bool> {
             return Ok(false);
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(entries) = std::fs::read_dir(dest.parent().unwrap_or(crewkit_dir)) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().contains(".old-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let retired = dest.with_extension(format!("old-{}", std::process::id()));
+        let _ = std::fs::rename(&dest, &retired);
+    }
     fsops::atomic_write(&dest, &bytes)?;
     #[cfg(unix)]
     {
@@ -329,7 +341,7 @@ mod wincred_tests {
     #[test]
     fn credential_manager_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let id = format!("crewkit-selftest-{}", std::process::id());
+        let id = format!("crewkit-selftest-wincred-{}", std::process::id());
 
         session::save(tmp.path(), &id, "s3cret").unwrap();
         // The secret lives in the Credential Manager — nothing lands on disk.

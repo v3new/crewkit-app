@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::lock::FileLock;
+
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// A renewal is two HTTP calls; a lock older than this belongs to a
@@ -1009,96 +1011,6 @@ fn html_escape(input: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Cross-process lock: the holder does the work, everyone else waits for
-/// what it stores. Stale locks (crashed process) expire.
-struct FileLock {
-    path: PathBuf,
-}
-
-impl FileLock {
-    fn acquire(path: PathBuf, stale_after: Duration) -> Option<Self> {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                // Record the holder so a crashed process's lock can be
-                // recognized as stale immediately, not after a timeout.
-                let _ = write!(file, "{}", std::process::id());
-                Some(Self { path })
-            }
-            Err(_) => {
-                let holder_alive = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .map(process_alive)
-                    .unwrap_or(false);
-                let expired = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .map(|t| t.elapsed().unwrap_or_default() > stale_after)
-                    .unwrap_or(true);
-                if !holder_alive || expired {
-                    let _ = std::fs::remove_file(&path);
-                    return Self::acquire(path, stale_after);
-                }
-                None
-            }
-        }
-    }
-
-    /// Take the lock over from a live holder — for explicit logins, which
-    /// must always reach the browser. The previous holder keeps waiting on
-    /// its own callback listener and resolves from whichever flow the
-    /// user completes; its guarded `Drop` leaves this lock alone.
-    fn steal(path: PathBuf) -> Self {
-        let _ = std::fs::remove_file(&path);
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-        {
-            let _ = write!(file, "{}", std::process::id());
-        }
-        Self { path }
-    }
-}
-
-#[cfg(not(windows))]
-fn process_alive(pid: u32) -> bool {
-    std::process::Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    // tasklist prints a table row for a live pid and an info message
-    // otherwise; matching the pid in the output separates the two.
-    crate::cli::command("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
-        .unwrap_or(false)
-}
-
-impl Drop for FileLock {
-    fn drop(&mut self) {
-        // Remove the file only while it is still ours: a preempting login
-        // may have replaced it, and that lock must survive our exit.
-        let mine = std::fs::read_to_string(&self.path)
-            .map(|s| s.trim() == std::process::id().to_string())
-            .unwrap_or(false);
-        if mine {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
 // --- Small helpers ---
 
 fn now_unix() -> u64 {
@@ -1284,7 +1196,7 @@ mod tests {
     #[test]
     fn a_renewal_elsewhere_is_picked_up() {
         let dir = tempfile::tempdir().unwrap();
-        let id = format!("crewkit-selftest-{}", std::process::id());
+        let id = format!("crewkit-selftest-auth-{}", std::process::id());
         let session = AuthSession::for_mcp(dir.path(), &id, "https://e/mcp");
         let stale = Tokens {
             access_token: "old".into(),

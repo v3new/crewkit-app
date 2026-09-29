@@ -147,16 +147,89 @@ impl KitRegistry {
     }
 
     pub fn load(crewkit_dir: &Path) -> Result<Self> {
-        match fsops::read_json(&Self::path(crewkit_dir))? {
-            Some(value) => Ok(serde_json::from_value(value).unwrap_or_default()),
-            None => Ok(Self::default()),
-        }
+        let mut registry: Self = match fsops::read_json(&Self::path(crewkit_dir))? {
+            Some(value) => serde_json::from_value(value).unwrap_or_default(),
+            None => Self::default(),
+        };
+        registry.kits.retain(|k| k.source != "builtin");
+        Ok(registry)
+    }
+
+    pub fn find(&self, kit_id: &str) -> Result<&KitSource> {
+        self.kits
+            .iter()
+            .find(|k| k.id == kit_id)
+            .ok_or_else(|| Error::Invalid(format!("unknown kit: {kit_id}")))
     }
 
     pub fn save(&self, crewkit_dir: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).expect("registry serializes");
         fsops::atomic_write(&Self::path(crewkit_dir), json.as_bytes())
     }
+}
+
+pub fn cache_path(crewkit_dir: &Path, kit_id: &str) -> PathBuf {
+    crewkit_dir
+        .join("kits-cache")
+        .join(format!("{kit_id}.json"))
+}
+
+pub fn artifacts_dir(crewkit_dir: &Path, kit_id: &str) -> PathBuf {
+    crewkit_dir.join("artifacts").join(kit_id)
+}
+
+pub fn write_cache(crewkit_dir: &Path, kit: &Kit) -> Result<()> {
+    let json = serde_json::to_string_pretty(kit).expect("kit serializes");
+    fsops::atomic_write(&cache_path(crewkit_dir, &kit.id), json.as_bytes())
+}
+
+/// The kit as the user chose it: the cached manifest narrowed to the
+/// selected bundle. Offline by design — scans never hit the network.
+pub fn load_cached(crewkit_dir: &Path, source: &KitSource) -> Result<Kit> {
+    let text = std::fs::read_to_string(cache_path(crewkit_dir, &source.id)).map_err(|_| {
+        Error::Invalid(format!(
+            "kit `{}` has no local cache — refresh it first",
+            source.id
+        ))
+    })?;
+    let mut kit = Kit::load(&text)?;
+    if let Some(bundle) = &source.bundle {
+        kit.apply_bundle(bundle)?;
+    }
+    Ok(kit)
+}
+
+/// Re-fetch a kit, verify it against the pinned publisher key and
+/// refresh the cache.
+pub fn refresh(source: &KitSource, crewkit_dir: &Path, auth: Auth) -> Result<Kit> {
+    let kit = fetch_verified(source, crewkit_dir, auth)?;
+    write_cache(crewkit_dir, &kit)?;
+    Ok(kit)
+}
+
+/// Fetch and verify without touching the cache, pinning the key when the
+/// source was added without one.
+pub fn fetch_verified(source: &KitSource, crewkit_dir: &Path, auth: Auth) -> Result<Kit> {
+    let fetched = fetch_kit(
+        &source.source,
+        source.pinned_key.as_deref(),
+        crewkit_dir,
+        auth,
+    )?;
+    if fetched.kit.id != source.id {
+        return Err(Error::Invalid(format!(
+            "manifest id changed: expected `{}`, got `{}`",
+            source.id, fetched.kit.id
+        )));
+    }
+    if source.pinned_key.is_none() {
+        let mut registry = KitRegistry::load(crewkit_dir)?;
+        if let Some(entry) = registry.kits.iter_mut().find(|k| k.id == source.id) {
+            entry.pinned_key = fetched.kit.publisher_key.clone();
+            registry.save(crewkit_dir)?;
+        }
+    }
+    Ok(fetched.kit)
 }
 
 // --- Fetch & verify ---
@@ -395,6 +468,30 @@ pub fn anonymous_id(crewkit_dir: &Path) -> String {
     let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let _ = fsops::atomic_write(&path, id.as_bytes());
     id
+}
+
+/// Disclosed install telemetry: what every client ended up with.
+pub fn report_install(kit: &Kit, crewkit_dir: &Path, scan: &crate::installer::ScanReport) {
+    let items: Vec<_> = scan
+        .items
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "kind": i.kind, "id": i.id, "client": i.client,
+                "status": i.status, "version": i.version,
+            })
+        })
+        .collect();
+    send_install_report(
+        kit,
+        crewkit_dir,
+        serde_json::json!({
+            "event": "install",
+            "appVersion": env!("CARGO_PKG_VERSION"),
+            "os": std::env::consts::OS,
+            "items": items,
+        }),
+    );
 }
 
 /// Fire-and-forget install report; the UI disclosed the endpoint before

@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+url = "2"
 serde.workspace = true
 serde_json.workspace = true
 crewkit-core = { path = "../../crates/crewkit-core" }

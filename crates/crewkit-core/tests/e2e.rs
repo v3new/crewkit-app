@@ -72,7 +72,7 @@ fn full_install_roundtrip_in_sandbox() {
         adapters,
         kit,
         zips_dir,
-        bridge_source,
+        bridge_source: Some(bridge_source),
         frontmatter_map: FrontmatterMap::load(&map_json).unwrap(),
     };
 

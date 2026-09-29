@@ -11,6 +11,7 @@
 //! - Client paths and commands come from declarative adapters, not code.
 
 pub mod adapter;
+pub mod assets;
 pub mod auth;
 pub mod bridge;
 pub mod cli;
@@ -22,11 +23,13 @@ pub mod installer;
 pub mod inventory;
 pub mod kit;
 pub mod kits;
+pub mod lock;
 pub mod marketplace;
 pub mod mcp;
 pub mod paths;
 pub mod state;
 pub mod translate;
+pub mod updater;
 
 pub use adapter::Adapter;
 pub use auth::AuthSession;
