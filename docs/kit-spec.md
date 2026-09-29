@@ -98,7 +98,7 @@ Rules:
                                       //   (installers reject a second kit reusing the name)
 
   // Optional release channels: alternate manifest URLs, absolute (https) or
-  // relative to this manifest's URL. The installer lets the user switch.
+  // relative to this manifest's URL. The user picks one when adding the kit.
   "channels": { "stable": "/kits/acme.json", "beta": "/kits/acme-beta.json" },
 
   // Optional, ALWAYS disclosed to the user before anything is sent:
@@ -108,7 +108,10 @@ Rules:
   // describing what is collected.
   "telemetry": { "endpoint": "https://…", "notice": "https://…" },
 
-  // Optional role bundles: named subsets a user can choose to install.
+  // Optional role bundles: named subsets. When present, the user picks one
+  // when adding the kit; only that bundle's items are shown and installed.
+  // An item added to the bundle later is announced to existing users, not
+  // installed automatically; a version bump of an installed item is applied.
   "bundles": [
     { "id": "email-team", "displayName": "Email team",
       "plugins": ["mail-writer"], "mcpServers": ["acme-mcp"] }

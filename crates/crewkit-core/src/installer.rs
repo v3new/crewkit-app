@@ -98,13 +98,30 @@ pub struct Engine {
     pub kit: Kit,
     /// Directory holding the kit's plugin zips.
     pub zips_dir: PathBuf,
-    /// The bundled crewkit-bridge binary, deployed to a stable path on install.
-    pub bridge_source: PathBuf,
+    /// The bundled crewkit-bridge binary, deployed to a stable path on
+    /// install; `None` when the caller is the bridge itself.
+    pub bridge_source: Option<PathBuf>,
     /// Frontmatter mapping table for the skill-translate pass (data, not code).
     pub frontmatter_map: FrontmatterMap,
 }
 
 impl Engine {
+    pub fn new(
+        paths: Paths,
+        kit: Kit,
+        zips_dir: PathBuf,
+        bridge_source: Option<PathBuf>,
+    ) -> Result<Engine> {
+        Ok(Engine {
+            paths,
+            adapters: crate::assets::adapters()?,
+            kit,
+            zips_dir,
+            bridge_source,
+            frontmatter_map: crate::assets::frontmatter_map()?,
+        })
+    }
+
     pub fn scan(&self) -> Result<ScanReport> {
         let crewkit_dir = self.paths.crewkit_dir();
         let clients = detect_all(&self.adapters, &self.paths);
@@ -262,7 +279,7 @@ impl Engine {
             // deploy step would only be noise.
             bridge_bin.exists()
         } else {
-            match bridge::install_bridge(&self.bridge_source, &crewkit_dir).and_then(|updated| {
+            match self.deploy_bridge(&crewkit_dir).and_then(|updated| {
                 bridge::write_servers_config(&self.kit, &crewkit_dir).map(|()| updated)
             }) {
                 Ok(updated) => {
@@ -967,6 +984,16 @@ impl Engine {
             restart_needed,
             scan,
         })
+    }
+
+    fn deploy_bridge(&self, crewkit_dir: &std::path::Path) -> Result<bool> {
+        match &self.bridge_source {
+            Some(source) => bridge::install_bridge(source, crewkit_dir),
+            None if bridge::bridge_path(crewkit_dir).exists() => Ok(false),
+            None => Err(crate::error::Error::Invalid(
+                "crewkit-bridge is not installed yet — run Install first".into(),
+            )),
+        }
     }
 
     /// Remove one kit item ("plugin" or "mcp") from every client. Only

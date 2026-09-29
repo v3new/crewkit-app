@@ -11,11 +11,13 @@
 //!   crewkit-bridge login <server-id>    run the OAuth flow interactively
 //!   crewkit-bridge logout <server-id>   revoke (best-effort) and drop the session
 //!   crewkit-bridge status <server-id>   print {"authorized": bool}
+//!   crewkit-bridge update               refresh kits, plugins and the app
 //!
 //! Server ids resolve to URLs via `<crewkit dir>/servers.json`, written
 //! by the CrewKit installer.
 
 mod proxy;
+mod update;
 
 use std::collections::BTreeMap;
 
@@ -56,7 +58,11 @@ fn main() {
     let paths = Paths::from_env();
 
     let result = match args.as_slice() {
-        [id] => resolve_url(&paths, id).and_then(|url| proxy::serve(&paths, id, &url)),
+        [cmd] if cmd == "update" => update::run(&paths),
+        [id] => resolve_url(&paths, id).and_then(|url| {
+            update::spawn_if_due(&paths);
+            proxy::serve(&paths, id, &url)
+        }),
         // An explicit login preempts any background one holding the lock:
         // the user asked for a browser tab now, not for a silent wait.
         [cmd, id] if cmd == "login" => resolve_url(&paths, id).and_then(|url| {
@@ -79,7 +85,7 @@ fn main() {
             let authorized = AuthSession::for_mcp(&paths.crewkit_dir(), id, &url).has_tokens();
             println!("{}", serde_json::json!({ "authorized": authorized }));
         }),
-        _ => Err("usage: crewkit-bridge [login|logout|status] <server-id>".to_string()),
+        _ => Err("usage: crewkit-bridge [login|logout|status] <server-id> | update".to_string()),
     };
 
     if let Err(message) = result {

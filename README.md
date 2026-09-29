@@ -46,6 +46,26 @@ side and Streamable HTTP on the other, and **owns the OAuth session at the CrewK
 Verified live end-to-end: browser OAuth against a real MCP server, then `initialize` and
 `tools/list` (47 tools) proxied over stdio.
 
+### Updates: the bridge keeps everything current
+
+The bridge is the process every AI client launches, so it is also the one that keeps
+kits, plugins and CrewKit itself up to date — whether or not the desktop app is running:
+
+- Every bridge start (and every hour while a bridge lives) kicks off a detached
+  `crewkit-bridge update` when the last check is older than 55 minutes. The proxy never
+  waits on it.
+- The updater re-fetches every added kit, verifies it against the pinned key, and updates
+  the plugins and MCP servers that are **already installed** in place. An item that newly
+  appears in the chosen bundle is announced, never installed behind the user's back.
+- A newer signed CrewKit release is installed as well: while the app runs, the app
+  updates itself silently and restarts; while it is closed, the updater verifies the
+  minisign signature and swaps the bundle (macOS) or runs the silent installer (Windows).
+- The desktop app does the same check at start and hourly, and shows what the bridge did
+  meanwhile as system notifications.
+- One cross-process lock (`update.lock`) serializes every write into the clients: UI
+  actions, the app's timer and the bridge's updater never race. State lives in
+  `update-state.json` next to the kit registry.
+
 Two findings make the "zero terminal" promise real:
 
 - **Client CLIs ship inside the desktop apps.** `codex` lives in `ChatGPT.app/Contents/Resources/`, and Claude's `claude` binary ships with Claude Desktop. CrewKit finds and drives the bundled binaries even when nothing is on `PATH`.
@@ -65,8 +85,10 @@ Highlights:
   https; loopback is exempt for development.
 - `publisherKey` + `<manifest>.sig` — ed25519 signature, key pinned on first add
   (a compromised CDN cannot swap publishers).
-- `channels` — alternate manifest URLs (stable/beta); the user switches in the UI.
-- `bundles` — role-based subsets of the kit.
+- `channels` — alternate manifest URLs (stable/beta); chosen when the kit is added.
+- `bundles` — role-based subsets of the kit; one is chosen when the kit is added, and
+  only its items are shown and installed. To switch channel or bundle, remove the kit
+  and add it again (`crewkit://add?kit=…&channel=beta&bundle=email-team` preselects both).
 - `telemetry` — per-kit install reporting, always disclosed on the kit card.
 - MCP entries carry `transport` (`"http"` = Streamable HTTP; unsupported transports are
   skipped with a warning), `auth` (`"oauth"` default, `"none"` for open endpoints) and
@@ -154,9 +176,9 @@ sessions; if that happens, wrap the built `CrewKit.app` yourself:
 ## Roadmap
 
 - **1.0 (current, macOS):** signed URL manifests with key pinning, stable/beta channels,
-  `crewkit://add` deep links, honest inventory, idempotent installs, tray + background
-  updates, in-place signed app self-update (Tauri updater; kits and the app both checked
-  every 2 hours), disclosed per-kit telemetry, EN/RU/ES/ZH UI, snapshots +
+  `crewkit://add` deep links, honest inventory, idempotent installs, tray + hourly
+  background updates driven by the bridge, silent signed app self-update (also while
+  the app is closed), disclosed per-kit telemetry, EN/RU/ES/ZH UI, snapshots +
   `crewkit rollback`, Keychain sessions, role bundles. Open source: Apache-2.0 code,
   [CC-BY manifest spec](docs/kit-spec.md).
 - **Windows (new):** x64 NSIS installer + signed self-updates from the same release.

@@ -727,6 +727,47 @@ button.chip--warn:hover {
   color: var(--fail);
 }
 
+.add-kit-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.add-kit-options {
+  flex-basis: 100%;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.add-kit-name {
+  font-size: 12px;
+}
+
+.new-items {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 16px 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.new-items-title {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.new-item {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
 /* --- Tooltips --- */
 
 .tip {

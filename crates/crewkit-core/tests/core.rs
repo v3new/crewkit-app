@@ -679,7 +679,7 @@ fn codex_mcp_installs_without_a_cli() {
         adapters: vec![codex],
         kit,
         zips_dir,
-        bridge_source,
+        bridge_source: Some(bridge_source),
         frontmatter_map: frontmatter_map(),
     };
 
@@ -843,7 +843,7 @@ fn cowork_plugins_install_and_remove_roundtrip() {
         adapters: vec![desktop],
         kit,
         zips_dir,
-        bridge_source,
+        bridge_source: Some(bridge_source),
         frontmatter_map: frontmatter_map(),
     };
 

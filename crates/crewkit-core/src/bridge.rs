@@ -35,6 +35,12 @@ pub fn install_bridge(source: &Path, crewkit_dir: &Path) -> Result<bool> {
             return Ok(false);
         }
     }
+    #[cfg(windows)]
+    {
+        let retired = dest.with_extension("old");
+        let _ = std::fs::remove_file(&retired);
+        let _ = std::fs::rename(&dest, &retired);
+    }
     fsops::atomic_write(&dest, &bytes)?;
     #[cfg(unix)]
     {

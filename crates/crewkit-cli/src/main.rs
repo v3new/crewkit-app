@@ -8,6 +8,7 @@
 //!   crewkit authorize <server-id>    run the CrewKit-level OAuth flow
 //!   crewkit logout <server-id>       drop the shared session
 //!   crewkit rollback                 restore configs from the latest snapshot
+//!   crewkit update                   refresh every added kit and its installed items
 //!   crewkit kit keygen <name>        generate a publisher signing keypair
 //!   crewkit kit sign <manifest> <secret-key-file>   write <manifest>.sig
 //!   crewkit kit login <manifest-url>    sign in to a kit behind a login
@@ -45,13 +46,14 @@ fn main() {
         ["authorize", id] => bridge_command(assets, "login", id),
         ["logout", id] => bridge_command(assets, "logout", id),
         ["rollback"] => rollback(),
+        ["update"] => update(),
         ["kit", "keygen", name] => keygen(name),
         ["kit", "sign", manifest, key_file] => sign(manifest, key_file),
         ["kit", "login", url] => kit_login(url),
         ["kit", "logout", url] => kit_logout(url),
         _ => {
             eprintln!(
-                "usage: crewkit [--assets <dir>] [--kit <manifest.json>] <scan | install | remove <plugin|mcp> <id> | authorize <id> | logout <id> | rollback | kit keygen <name> | kit sign <manifest> <secret-key-file> | kit login <manifest-url> | kit logout <manifest-url>>"
+                "usage: crewkit [--assets <dir>] [--kit <manifest.json>] <scan | install | remove <plugin|mcp> <id> | authorize <id> | logout <id> | rollback | update | kit keygen <name> | kit sign <manifest> <secret-key-file> | kit login <manifest-url> | kit logout <manifest-url>>"
             );
             std::process::exit(2);
         }
@@ -65,6 +67,35 @@ fn main() {
 
 /// Sign in to a kit published behind a login: opens the browser and
 /// caches the session every AI client on this machine then shares.
+fn update() -> Result<(), String> {
+    let paths = Paths::from_env();
+    let report = crewkit_core::updater::run(
+        &paths,
+        crewkit_core::updater::Trigger::Manual,
+        None,
+        print_step,
+    )
+    .map_err(|e| e.to_string())?;
+    match report {
+        None => println!("another updater is running"),
+        Some(report) => {
+            for kit in report.kits {
+                match kit.error {
+                    Some(error) => println!("{}: {error}", kit.kit),
+                    None => println!(
+                        "{}: {} updated, {} new, {} removed",
+                        kit.kit,
+                        kit.diff.updated.len(),
+                        kit.diff.added.len(),
+                        kit.diff.removed.len()
+                    ),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn kit_login(url: &str) -> Result<(), String> {
     let crewkit_dir = Paths::from_env().crewkit_dir();
     crewkit_core::kits::login_to_kit(url, &crewkit_dir).map_err(|e| e.to_string())?;
@@ -163,7 +194,7 @@ fn build_engine(assets: Option<PathBuf>, kit: Option<PathBuf>) -> Result<Engine,
         adapters,
         kit,
         zips_dir: assets.join("skills"),
-        bridge_source,
+        bridge_source: Some(bridge_source),
         frontmatter_map: FrontmatterMap::load(FRONTMATTER_MAP).map_err(|e| e.to_string())?,
     })
 }
