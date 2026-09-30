@@ -4,6 +4,10 @@
   "cli": {
     "pathNames": ["codex"],
     "bundledGlobs": [
+      "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+      "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+      "${home}/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+      "${home}/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
       "/Applications/ChatGPT.app/Contents/Resources/codex",
       "/Applications/Codex.app/Contents/Resources/codex",
       "${home}/Applications/ChatGPT.app/Contents/Resources/codex",
@@ -24,5 +28,5 @@
     "config": "${codexHome}/config.toml"
   },
   "restartRequired": false,
-  "notes": "The Codex CLI ships inside ChatGPT.app on macOS, and the Windows Codex desktop app materializes it under %LOCALAPPDATA%/OpenAI/Codex/bin/<hash>/ (it also adds that dir to the user PATH, but GUI processes may hold a stale environment snapshot — hence the glob). Configuration is shared between Codex CLI, the desktop app's Codex surface, and the IDE extension."
+  "notes": "The Codex CLI ships inside ChatGPT.app on macOS (Contents/Resources/codex-cli/bin/codex since ChatGPT 26.92x; Contents/Resources/codex before), and the Windows Codex desktop app materializes it under %LOCALAPPDATA%/OpenAI/Codex/bin/<hash>/ (it also adds that dir to the user PATH, but GUI processes may hold a stale environment snapshot — hence the glob). Configuration is shared between Codex CLI, the desktop app's Codex surface, and the IDE extension."
 }

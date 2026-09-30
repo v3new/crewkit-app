@@ -68,7 +68,7 @@ kits, plugins and CrewKit itself up to date — whether or not the desktop app i
 
 Two findings make the "zero terminal" promise real:
 
-- **Client CLIs ship inside the desktop apps.** `codex` lives in `ChatGPT.app/Contents/Resources/`, and Claude's `claude` binary ships with Claude Desktop. CrewKit finds and drives the bundled binaries even when nothing is on `PATH`.
+- **Client CLIs ship inside the desktop apps.** `codex` lives in `ChatGPT.app/Contents/Resources/codex-cli/bin/`, and Claude's `claude` binary ships with Claude Desktop. CrewKit finds and drives the bundled binaries even when nothing is on `PATH`.
 - **One marketplace directory serves both ecosystems.** Claude reads `.claude-plugin/marketplace.json`, Codex reads `.agents/plugins/marketplace.json`; each staged plugin carries both manifests. Kit payloads are normalized on the way in — a zip may contain a Claude plugin, a Codex plugin, or a bare Agent Skill folder, which gets wrapped into a single-skill plugin.
 
 ## Kit manifest
