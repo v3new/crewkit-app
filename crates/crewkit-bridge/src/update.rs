@@ -21,12 +21,15 @@ pub fn spawn_if_due(paths: &Paths) {
 
 pub fn run(paths: &Paths) -> Result<(), String> {
     let crewkit_dir = paths.crewkit_dir();
-    let mut log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(crewkit_dir.join("updater.log"))
-        .ok();
+    let mut log: Option<std::fs::File> = None;
     let mut line = |text: String| {
+        if log.is_none() {
+            log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(crewkit_dir.join("updater.log"))
+                .ok();
+        }
         if let Some(log) = log.as_mut() {
             let _ = writeln!(log, "{text}");
         }

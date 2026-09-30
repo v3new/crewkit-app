@@ -198,11 +198,11 @@ async fn watch_state(app: AppHandle) {
     let dir = crewkit_dir();
     let state_path = UpdateState::path(&dir);
     let mut seen = modified(&state_path);
-    let mut busy = false;
+    let mut busy = true;
     loop {
         sleep(Duration::from_secs(60)).await;
         let now_busy = updater::in_progress(&dir);
-        if now_busy != busy {
+        if now_busy || now_busy != busy {
             busy = now_busy;
             let _ = app.emit("background-update", busy);
         }

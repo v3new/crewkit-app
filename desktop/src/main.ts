@@ -1352,6 +1352,7 @@ async function main(): Promise<void> {
     render();
   });
   await listen<boolean>("background-update", (event) => {
+    if (backgroundBusy === event.payload) return;
     backgroundBusy = event.payload;
     render();
   });
