@@ -6,6 +6,20 @@ A publisher describes a set once — a signed *kit* manifest on any static hosti
 
 > **Status: 1.0 on macOS.** Signed kit manifests by URL, release channels, `crewkit://` deep links, menu-bar tray with background updates, Keychain-stored OAuth sessions, role bundles, disclosed per-kit telemetry, EN/RU/ES/ZH UI, rollback. The app starts clean — users add publisher kits by URL or deep link. A Windows build (x64 NSIS installer) ships from the same release pipeline — newer and less battle-tested than macOS. MDM is the remaining roadmap item. See the [roadmap](#roadmap).
 
+## Install
+
+**macOS** (Apple Silicon) — paste into Terminal:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/v3new/crewkit-app/main/install.sh)"
+```
+
+It downloads the latest release from this repository, puts `CrewKit.app` into `/Applications`, clears the download-quarantine flag so Gatekeeper lets it open, and launches it. Read [install.sh](install.sh) first if you like; it is short. Prefer a disk image? [CrewKit_aarch64.dmg](https://github.com/v3new/crewkit-app/releases/latest/download/CrewKit_aarch64.dmg).
+
+**Windows** (x64) — download and run [CrewKit_x64-setup.exe](https://github.com/v3new/crewkit-app/releases/latest/download/CrewKit_x64-setup.exe). The installer is per-user and needs no admin rights.
+
+Both links always point at the latest release; older versions are on the [releases page](https://github.com/v3new/crewkit-app/releases). Once installed, CrewKit updates itself.
+
 ## How it works
 
 CrewKit does not automate UI clicks and never touches OAuth tokens. It uses only the clients' own automatic surfaces, all verified on live clients:
