@@ -4,8 +4,15 @@
   "cli": {
     "pathNames": ["claude"],
     "bundledGlobs": [
+      "${appSupport}/Claude/claude-code/*/*/claude.app/Contents/MacOS/claude",
+      "${appSupport}/Claude/claude-code/*/*/claude.exe",
       "${appSupport}/Claude/claude-code/*/claude.app/Contents/MacOS/claude",
       "${appSupport}/Claude/claude-code/*/claude.exe",
+      "${localAppData}/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/*/claude.exe",
+      "${localAppData}/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/claude.exe",
+      "${appSupport}/Claude-3p/claude-code/*/*/claude.app/Contents/MacOS/claude",
+      "${appSupport}/Claude-3p/claude-code/*/*/claude.exe",
+      "${localAppData}/Claude-3p/claude-code/*/*/claude.exe",
       "${appSupport}/npm/claude.cmd",
       "${home}/.local/bin/claude.exe",
       "${home}/.local/bin/claude",
@@ -23,5 +30,5 @@
     "installedPlugins": "${claudeConfigDir}/plugins/installed_plugins.json"
   },
   "restartRequired": false,
-  "notes": "Plugins installed here reach the Claude Code CLI and the desktop app's Code tab; Cowork has its own plugin store (see the claude-desktop adapter). The GUI process gets a minimal PATH on both platforms, so every install channel is probed directly: the native installer's ~/.local/bin (claude on macOS/Linux, claude.exe on Windows), Homebrew's bin dirs, npm shims (npm.cmd dir, nvm/volta/pnpm/asdf), and the copy bundled inside Claude Desktop. The newest version among the candidates wins."
+  "notes": "Plugins installed here reach the Claude Code CLI and the desktop app's Code tab; Cowork has its own plugin store (see the claude-desktop adapter). The GUI process gets a minimal PATH on both platforms, so every install channel is probed directly: the native installer's ~/.local/bin (claude on macOS/Linux, claude.exe on Windows), Homebrew's bin dirs, npm shims (npm.cmd dir, nvm/volta/pnpm/asdf), and the copy bundled inside Claude Desktop (claude-code/<ver>/<build-id>/ in current builds, claude-code/<ver>/ in older ones; the Microsoft Store build keeps it in its virtualized LocalCache, enterprise builds under Claude-3p). The newest version among the candidates wins."
 }
