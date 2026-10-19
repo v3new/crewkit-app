@@ -27,6 +27,7 @@ pub mod lock;
 pub mod marketplace;
 pub mod mcp;
 pub mod paths;
+pub mod skillsdir;
 pub mod state;
 pub mod translate;
 pub mod updater;

@@ -10,6 +10,7 @@ use crate::fsops;
 use crate::kit::{Kit, KitPlugin, McpServer};
 use crate::mcp::{MANAGED_KEY, MANAGED_VALUE};
 use crate::paths::Paths;
+use crate::skillsdir;
 use crate::state::ManagedState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -84,6 +85,17 @@ pub fn claude_plugin_install(paths: &Paths, plugin_id: &str) -> Option<(String, 
         .and_then(|v| v.as_str())
         .and_then(iso_to_epoch_ms);
     Some((version, updated))
+}
+
+/// Whether Claude Code's settings.json has the marketplace install of
+/// this plugin switched on — the marketplace channel on its own, apart
+/// from a skills-dir copy.
+pub fn claude_plugin_enabled(paths: &Paths, plugin_id: &str) -> bool {
+    fsops::read_json(&paths.claude_config_dir.join("settings.json"))
+        .ok()
+        .flatten()
+        .and_then(|s| s.get("enabledPlugins")?.get(plugin_id)?.as_bool())
+        .unwrap_or(false)
 }
 
 /// Installed version + last-update time of a Codex plugin, from its
@@ -198,7 +210,13 @@ fn survey(
     let claude_settings = fsops::read_json(&claude_settings_path)?;
     for &plugin in &plugins {
         let plugin_id = kit.plugin_id(plugin);
-        let install = claude_plugin_install(paths, &plugin_id);
+        // Without a CLI the plugin may live in the skills directory
+        // instead (`skillsdir`); either channel counts as installed.
+        let fallback = skillsdir::installed(paths, &kit.marketplace_name, &plugin.name);
+        let fallback_on = fallback.is_some() && skillsdir::enabled(paths, &plugin.name);
+        let marketplace_install = claude_plugin_install(paths, &plugin_id);
+        let in_skills_dir = marketplace_install.is_none() && fallback.is_some();
+        let install = marketplace_install.or(fallback);
         let status = if !present("claude-code") {
             Status::ClientUnavailable
         } else if retired {
@@ -218,7 +236,7 @@ fn survey(
                 .and_then(|p| p.get(&plugin_id))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if enabled {
+            if enabled || fallback_on {
                 Status::Installed
             } else {
                 Status::NotInstalled
@@ -229,7 +247,11 @@ fn survey(
             id: plugin_id,
             client: "claude-code".into(),
             status,
-            path: short(paths, &claude_settings_path),
+            path: if in_skills_dir {
+                short(paths, &skillsdir::plugin_dir(paths, &plugin.name))
+            } else {
+                short(paths, &claude_settings_path)
+            },
             note: None,
             version: install.as_ref().map(|(v, _)| v.clone()),
             updated_at_ms: install.and_then(|(_, t)| t),

@@ -12,12 +12,14 @@ use crate::detect::{detect_all, DetectedClient};
 use crate::error::Result;
 use crate::fsops::{self, Snapshotter};
 use crate::inventory::{
-    claude_plugin_install, codex_plugin_install, inventory, retired_inventory, ItemState, Status,
+    claude_plugin_enabled, claude_plugin_install, codex_plugin_install, inventory,
+    retired_inventory, ItemState, Status,
 };
 use crate::kit::{Kit, KitPlugin, McpServer};
 use crate::marketplace;
 use crate::mcp::{self, Outcome, RemoveOutcome};
 use crate::paths::Paths;
+use crate::skillsdir;
 use crate::state::ManagedState;
 use crate::translate::FrontmatterMap;
 
@@ -376,7 +378,34 @@ impl Engine {
                 if registered {
                     for plugin in wanted_plugins.iter().copied() {
                         let plugin_id = self.kit.plugin_id(plugin);
-                        if status_of("plugin", "claude-code", &plugin_id) == Status::Installed {
+                        // A copy placed while no CLI was around gives way to
+                        // the marketplace install — both would load the same
+                        // skills under two ids.
+                        let drop_skills_dir_copy =
+                            |push: &mut dyn FnMut(StepReport)| match skillsdir::remove(
+                                &self.paths,
+                                &self.kit.marketplace_name,
+                                &plugin.name,
+                            ) {
+                                Ok(true) => push(ok_step(
+                                    &format!("Remove {}", skillsdir::plugin_id(&plugin.name)),
+                                    "claude-code",
+                                    "replaced by the marketplace install",
+                                )),
+                                Ok(false) => {}
+                                Err(e) => push(failed(
+                                    &format!("Remove {}", skillsdir::plugin_id(&plugin.name)),
+                                    "claude-code",
+                                    &e.to_string(),
+                                )),
+                            };
+                        // Judged on the marketplace channel alone: a skills-dir
+                        // copy also reads as installed, but is no reason to
+                        // skip a marketplace plugin the user switched off.
+                        if claude_plugin_enabled(&self.paths, &plugin_id)
+                            && claude_plugin_install(&self.paths, &plugin_id).is_some()
+                        {
+                            drop_skills_dir_copy(&mut |r| push(r, &mut steps));
                             // Reinstall means update-or-skip, never duplicate:
                             // when the kit ships a newer version, update it.
                             let staged = staged_plugin_version(&marketplace_dir, &plugin.name);
@@ -430,6 +459,7 @@ impl Engine {
                                 .plugins
                                 .insert(ManagedState::key("claude-code", &plugin_id));
                             claude_changed = true;
+                            drop_skills_dir_copy(&mut |r| push(r, &mut steps));
                         }
                     }
                 }
@@ -524,12 +554,28 @@ impl Engine {
             }
             _ => {
                 if scope.wants_client("claude-code") {
+                    let present = client("claude-code").is_some_and(|c| c.present);
+                    if plugins_pass && present {
+                        claude_changed |= skillsdir::install_steps(
+                            &self.paths,
+                            &self.kit,
+                            &wanted_plugins,
+                            &marketplace_dir,
+                            &mut snap,
+                            &mut |r| push(r, &mut steps),
+                        );
+                    }
+                    let message = if present && !wanted_servers.is_empty() {
+                        "claude CLI not found (neither on PATH nor bundled) — MCP servers need it"
+                    } else {
+                        "claude CLI not found (neither on PATH nor bundled)"
+                    };
                     push(
                         StepReport {
                             step: "Claude install".into(),
                             client: "claude-code".into(),
                             status: StepStatus::Skipped,
-                            message: "claude CLI not found (neither on PATH nor bundled)".into(),
+                            message: message.into(),
                         },
                         &mut steps,
                     );
@@ -1111,11 +1157,31 @@ impl Engine {
         let mut codex_changed = false;
         let mut desktop_changed = false;
 
+        let mut copy_handled = false;
+        if wants("claude-code") {
+            let step = format!("Remove plugin {}", skillsdir::plugin_id(&plugin.name));
+            match skillsdir::remove(&self.paths, &self.kit.marketplace_name, &plugin.name) {
+                Ok(true) => {
+                    copy_handled = true;
+                    claude_changed = true;
+                    emit(ok_step(
+                        &step,
+                        "claude-code",
+                        "removed from the skills directory",
+                    ));
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    copy_handled = true;
+                    emit(failed(&step, "claude-code", &e.to_string()));
+                }
+            }
+        }
         if let Some(cli) =
             client("claude-code").and_then(|c| c.cli_path.clone().filter(|_| wants("claude-code")))
         {
             let step = format!("Remove plugin {plugin_id}");
-            if find_status(items, "plugin", "claude-code", &plugin_id) == Status::Installed {
+            if claude_plugin_install(&self.paths, &plugin_id).is_some() {
                 if run_cli_emit(
                     &cli,
                     &["plugin", "uninstall", &plugin_id],
@@ -1129,7 +1195,7 @@ impl Engine {
                         .remove(&ManagedState::key("claude-code", &plugin_id));
                     claude_changed = true;
                 }
-            } else {
+            } else if !copy_handled {
                 emit(skipped(&step, "claude-code", "not installed"));
             }
         }
