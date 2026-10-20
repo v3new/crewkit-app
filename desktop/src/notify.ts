@@ -21,6 +21,10 @@ export function describe(n: Notification): { title: string; body: string } {
 
 export async function notify(n: Notification): Promise<void> {
   const { title, body } = describe(n);
+  await notifyText(title, body);
+}
+
+export async function notifyText(title: string, body: string): Promise<void> {
   try {
     const granted = (await isPermissionGranted()) || (await requestPermission()) === "granted";
     if (granted) sendNotification({ title, body });

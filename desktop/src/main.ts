@@ -10,6 +10,7 @@ import type {
   BackgroundReport,
   DeepLinkAdd,
   DetectedClient,
+  FailedUpdate,
   InstallReport,
   ItemRef,
   ItemState,
@@ -20,7 +21,7 @@ import type {
   ScanReport,
   StepReport,
 } from "./types";
-import { describe, notify } from "./notify";
+import { describe, notify, notifyText } from "./notify";
 
 // --- Presentation of the two ecosystems ---
 
@@ -942,8 +943,12 @@ async function installAppUpdate(): Promise<void> {
   appUpdateError = "";
   render();
   try {
-    // On success the app restarts itself; this call never resolves.
+    // On success the app restarts itself; resolving means there was
+    // nothing left to install.
     await invoke("install_app_update");
+    appUpdate = null;
+    updatingApp = false;
+    render();
   } catch (e) {
     logEvents({ step: "App update", client: "crewkit", status: "failed", message: String(e) });
     appUpdateError = String(e);
@@ -1047,10 +1052,11 @@ async function runSignInQueue(): Promise<void> {
 
 /// Show the restart banner for these apps; it hides itself after a minute.
 function showRestart(names: string[]): void {
+  // A report that needs no restart must not keep an old banner alive.
+  if (!names.length) return;
   for (const name of names) {
     if (!restartNeeded.includes(name)) restartNeeded.push(name);
   }
-  if (!restartNeeded.length) return;
   clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartNeeded = [];
@@ -1347,8 +1353,16 @@ async function main(): Promise<void> {
   });
   await listen("kits-updated", () => void rescanAll());
   await listen("kits-changed", () => void rescanAll());
-  await listen<string>("app-update-available", (event) => {
-    appUpdate = event.payload;
+  await listen<FailedUpdate>("app-update-available", (event) => {
+    appUpdate = event.payload.version;
+    appUpdateError = event.payload.error;
+    render();
+  });
+  await listen<string>("app-update-check-failed", (event) => void notifyText(t("notifCheckFailed"), event.payload));
+  await listen("app-update-current", () => {
+    if (!appUpdate || updatingApp) return;
+    appUpdate = null;
+    appUpdateError = "";
     render();
   });
   await listen<boolean>("background-update", (event) => {

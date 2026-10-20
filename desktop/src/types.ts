@@ -120,6 +120,12 @@ export interface BackgroundReport {
   restartNeeded: string[];
 }
 
+/** A newer release that was found but did not install. */
+export interface FailedUpdate {
+  version: string;
+  error: string;
+}
+
 export interface DeepLinkAdd {
   url: string;
   channel: string | null;
