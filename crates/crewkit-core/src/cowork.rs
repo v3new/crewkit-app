@@ -177,12 +177,15 @@ pub fn remove_plugin(profile: &Profile, marketplace: &str, plugin: &str) -> Resu
     let plugin_id = format!("{plugin}@{marketplace}");
     let mut removed = false;
     update_json(&profile.installed_file(), |registry| {
-        if let Some(plugins) = registry["plugins"].as_object_mut() {
+        if let Some(plugins) = registry.get_mut("plugins").and_then(Value::as_object_mut) {
             removed |= plugins.remove(&plugin_id).is_some();
         }
     })?;
     update_json(&profile.settings_file(), |settings| {
-        if let Some(enabled) = settings["enabledPlugins"].as_object_mut() {
+        if let Some(enabled) = settings
+            .get_mut("enabledPlugins")
+            .and_then(Value::as_object_mut)
+        {
             removed |= enabled.remove(&plugin_id).is_some();
         }
     })?;
@@ -209,6 +212,22 @@ pub fn remove_plugin(profile: &Profile, marketplace: &str, plugin: &str) -> Resu
         })?;
     }
     Ok(removed)
+}
+
+/// Older CrewKit wrote `null` maps when removing from an empty profile,
+/// which makes the app fail to read any local plugin.
+pub fn repair(profile: &Profile) -> Result<()> {
+    for (path, key) in [
+        (profile.installed_file(), "plugins"),
+        (profile.settings_file(), "enabledPlugins"),
+    ] {
+        let broken =
+            fsops::read_json(&path)?.is_some_and(|v| v.get(key).is_some_and(Value::is_null));
+        if broken {
+            update_json(&path, |value| value[key] = json!({}))?;
+        }
+    }
+    Ok(())
 }
 
 fn update_json(path: &Path, edit: impl FnOnce(&mut Value)) -> Result<()> {

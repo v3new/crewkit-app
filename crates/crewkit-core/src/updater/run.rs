@@ -77,6 +77,7 @@ pub fn run(
     let Some(_lock) = lock(&crewkit_dir) else {
         return Ok(None);
     };
+    super::migrate::run(paths);
     let mut report = UpdateReport::default();
     for source in KitRegistry::load(&crewkit_dir)?.kits {
         let outcome = update_kit(paths, &source, trigger, bridge_source, &mut on_step);

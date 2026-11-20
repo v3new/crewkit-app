@@ -4,6 +4,7 @@
 
 mod app;
 mod diff;
+mod migrate;
 mod run;
 mod spawn;
 mod state;
