@@ -21,7 +21,7 @@ import type {
   ScanReport,
   StepReport,
 } from "./types";
-import { describe, notify, notifyText } from "./notify";
+import { describe, notify } from "./notify";
 
 // --- Presentation of the two ecosystems ---
 
@@ -1358,7 +1358,6 @@ async function main(): Promise<void> {
     appUpdateError = event.payload.error;
     render();
   });
-  await listen<string>("app-update-check-failed", (event) => void notifyText(t("notifCheckFailed"), event.payload));
   await listen("app-update-current", () => {
     if (!appUpdate || updatingApp) return;
     appUpdate = null;

@@ -1,58 +1,31 @@
 //! What keeps CrewKit current while the app runs: kits and plugins at
-//! start and every hour, the app itself through the signed updater, and
-//! a minute-by-minute look at what the bridge's updater did meanwhile.
+//! start and every hour, and a minute-by-minute look at what the bridge's
+//! updater did meanwhile.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use crewkit_core::bridge;
 use crewkit_core::lock::FileLock;
-use crewkit_core::updater::{self, AppInfo, Trigger, UpdateState, CHECK_INTERVAL};
+use crewkit_core::updater::{self, AppInfo, Trigger, UpdateState, AUTO_APP_UPDATE, CHECK_INTERVAL};
 use crewkit_core::{Paths, StepReport};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_updater::UpdaterExt;
 
+use crate::appupdate::self_update;
 use crate::kits::{bridge_source, crewkit_dir};
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundReport {
-    steps: Vec<StepReport>,
-    restart_needed: Vec<String>,
-}
-
-/// A newer release that was found but did not install; the UI's banner
-/// names it and offers a retry.
-#[derive(Serialize, Clone)]
-pub struct FailedUpdate {
-    version: String,
-    error: String,
-}
-
-enum UpdateError {
-    /// The release feed could not be read, so nothing is known about a
-    /// newer version; the next check retries.
-    Check(String),
-    Install(FailedUpdate),
-}
-
-impl UpdateError {
-    /// The banner already names the version, so only the reason.
-    fn message(self) -> String {
-        match self {
-            UpdateError::Check(error) => error,
-            UpdateError::Install(failed) => failed.error,
-        }
-    }
+    pub steps: Vec<StepReport>,
+    pub restart_needed: Vec<String>,
 }
 
 /// Held while the app runs so the bridge's updater leaves it alone;
 /// released on exit so a stale pid never blocks offline updates.
 static APP_LOCK: Mutex<Option<FileLock>> = Mutex::new(None);
-static SELF_UPDATING: AtomicBool = AtomicBool::new(false);
 
 pub fn release_app_lock() {
     if let Ok(mut lock) = APP_LOCK.lock() {
@@ -66,7 +39,9 @@ pub fn start(app: AppHandle) {
         let handle = startup.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || register(&handle)).await;
         run_kits(&startup, Trigger::Startup).await;
-        self_update(&startup, false).await;
+        if AUTO_APP_UPDATE {
+            self_update(&startup).await;
+        }
     });
 
     let hourly = app.clone();
@@ -75,7 +50,9 @@ pub fn start(app: AppHandle) {
         loop {
             sleep(CHECK_INTERVAL + jitter).await;
             run_kits(&hourly, Trigger::Hourly).await;
-            self_update(&hourly, false).await;
+            if AUTO_APP_UPDATE {
+                self_update(&hourly).await;
+            }
         }
     });
 
@@ -106,7 +83,7 @@ fn register(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn wait_for_lock(dir: &Path, attempts: u32) -> Option<crewkit_core::lock::FileLock> {
+pub fn wait_for_lock(dir: &Path, attempts: u32) -> Option<crewkit_core::lock::FileLock> {
     for _ in 0..attempts {
         if let Some(lock) = updater::lock(dir) {
             return Some(lock);
@@ -169,96 +146,6 @@ fn drain_notifications(app: &AppHandle) {
     }
 }
 
-/// Silent self-update: download, verify against the pinned key, install,
-/// and restart — all while holding the update lock, so no install is
-/// writing into the clients when the process goes away.
-/// `manual` (the tray's "Update now") also tells the user when the
-/// release feed could not be read; scheduled checks only log it.
-async fn self_update(app: &AppHandle, manual: bool) {
-    if SELF_UPDATING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    match apply_app_update(app).await {
-        Ok(()) => {
-            let _ = app.emit("app-update-current", ());
-        }
-        Err(UpdateError::Check(error)) => {
-            if manual {
-                let _ = app.emit("app-update-check-failed", error.clone());
-            }
-            let _ = app.emit(
-                "background-report",
-                BackgroundReport {
-                    steps: vec![StepReport {
-                        step: "Check for CrewKit update".into(),
-                        client: "crewkit".into(),
-                        status: crewkit_core::StepStatus::Skipped,
-                        message: error,
-                    }],
-                    restart_needed: Vec::new(),
-                },
-            );
-        }
-        Err(UpdateError::Install(failed)) => {
-            let _ = app.emit("app-update-available", failed);
-        }
-    }
-    SELF_UPDATING.store(false, Ordering::SeqCst);
-}
-
-async fn apply_app_update(app: &AppHandle) -> Result<(), UpdateError> {
-    let updater = app
-        .updater()
-        .map_err(|e| UpdateError::Check(e.to_string()))?;
-    let Some(update) = updater
-        .check()
-        .await
-        .map_err(|e| UpdateError::Check(e.to_string()))?
-    else {
-        return Ok(());
-    };
-    let failed = |error: String| {
-        UpdateError::Install(FailedUpdate {
-            version: update.version.clone(),
-            error,
-        })
-    };
-    let dir = crewkit_dir();
-    let lock = tauri::async_runtime::spawn_blocking(move || wait_for_lock(&dir, 120))
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| failed("an install is still running".into()))?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| failed(e.to_string()))?;
-    drop(lock);
-    app.restart();
-}
-
-/// Retry of a failed silent update from the banner's button. `Ok` means
-/// there is nothing to install any more; on success the app restarts.
-#[tauri::command]
-pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
-    if SELF_UPDATING.swap(true, Ordering::SeqCst) {
-        return Err("update already running".into());
-    }
-    let result = apply_app_update(&app).await;
-    SELF_UPDATING.store(false, Ordering::SeqCst);
-    if let Err(UpdateError::Install(failed)) = &result {
-        // The retry may have found a newer release than the banner names.
-        let _ = app.emit("app-update-available", failed.clone());
-    }
-    result.map_err(UpdateError::message)
-}
-
-#[tauri::command]
-pub async fn update_now(app: AppHandle) {
-    run_kits(&app, Trigger::Manual).await;
-    self_update(&app, true).await;
-}
-
 async fn watch_state(app: AppHandle) {
     let dir = crewkit_dir();
     let state_path = UpdateState::path(&dir);
@@ -278,11 +165,10 @@ async fn watch_state(app: AppHandle) {
         seen = stamp;
         drain_notifications(&app);
         let _ = app.emit("kits-updated", ());
-        let pending = UpdateState::load(&dir)
-            .map(|s| s.app_update_available.is_some())
-            .unwrap_or(false);
-        if pending {
-            self_update(&app, false).await;
+        if AUTO_APP_UPDATE
+            && UpdateState::load(&dir).is_ok_and(|s| s.app_update_available.is_some())
+        {
+            self_update(&app).await;
             seen = modified(&state_path);
         }
     }

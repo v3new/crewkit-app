@@ -8,7 +8,10 @@ mod run;
 mod spawn;
 mod state;
 
-pub use app::{app_running, check_and_install as update_app, hold_app_lock, is_newer, Release};
+pub use app::{
+    app_running, check_and_install as update_app, hold_app_lock, is_newer, Release,
+    AUTO_UPDATE as AUTO_APP_UPDATE,
+};
 pub use diff::{diff, Change, ItemRef, KitDiff};
 pub use run::{in_progress, lock, lock_held, run, KitOutcome, Trigger, UpdateReport};
 pub use spawn::spawn_if_due;

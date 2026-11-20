@@ -1,3 +1,4 @@
+mod appupdate;
 mod events;
 mod items;
 mod kits;
@@ -41,7 +42,7 @@ fn take_deep_link(state: tauri::State<'_, PendingDeepLink>) -> Option<DeepLinkAd
     state.0.lock().ok()?.take()
 }
 
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -64,6 +65,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             kits::list_kits,
             kits::inspect_kit,
@@ -81,16 +83,21 @@ pub fn run() {
             items::update_in_progress,
             items::take_notifications,
             take_deep_link,
-            updates::install_app_update,
-            updates::update_now,
+            appupdate::install_app_update,
             events::load_event_log,
             events::save_event_log
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open CrewKit", true, None::<&str>)?;
-            let update = MenuItem::with_id(app, "update", "Update now", true, None::<&str>)?;
+            let check = MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit CrewKit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &update, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &check, &quit])?;
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
@@ -99,9 +106,9 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main_window(app),
-                    "update" => {
+                    "check-updates" => {
                         let app = app.clone();
-                        tauri::async_runtime::spawn(async move { updates::update_now(app).await });
+                        tauri::async_runtime::spawn(appupdate::check_for_updates(app));
                     }
                     "quit" => app.exit(0),
                     _ => {}
