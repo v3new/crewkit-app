@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 /// All base directories CrewKit reads or writes.
 ///
 /// Adapters reference these through `${home}`, `${claudeConfigDir}`,
-/// `${codexHome}`, `${appSupport}` and `${localAppData}` template
+/// `${claudeJson}`, `${codexHome}`, `${appSupport}` and `${localAppData}` template
 /// variables, so tests can
 /// point everything at a sandbox root and the same code paths run
 /// against real client installations in production.
@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 pub struct Paths {
     pub home: PathBuf,
     pub claude_config_dir: PathBuf,
+    /// Claude Code's user config (user-scope MCP servers): inside
+    /// `CLAUDE_CONFIG_DIR` when that is set, otherwise `~/.claude.json`.
+    pub claude_json: PathBuf,
     pub codex_home: PathBuf,
     pub app_support: PathBuf,
     /// Per-user local (non-roaming) app data: `%LOCALAPPDATA%` on Windows,
@@ -26,9 +29,11 @@ impl Paths {
         let home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
         #[cfg(not(windows))]
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".claude"));
+        let claude_env = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let claude_json = claude_env
+            .as_ref()
+            .map_or_else(|| home.join(".claude.json"), |dir| dir.join(".claude.json"));
+        let claude_config_dir = claude_env.unwrap_or_else(|| home.join(".claude"));
         let codex_home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"));
@@ -49,6 +54,7 @@ impl Paths {
         Self {
             home,
             claude_config_dir,
+            claude_json,
             codex_home,
             app_support,
             local_app_data,
@@ -60,6 +66,7 @@ impl Paths {
         let home = root.join("home");
         Self {
             claude_config_dir: home.join(".claude"),
+            claude_json: home.join(".claude/.claude.json"),
             codex_home: home.join(".codex"),
             app_support: home.join("Library/Application Support"),
             local_app_data: home.join("AppData/Local"),
@@ -106,6 +113,7 @@ impl Paths {
                 "${claudeConfigDir}",
                 &self.claude_config_dir.to_string_lossy(),
             )
+            .replace("${claudeJson}", &self.claude_json.to_string_lossy())
             .replace("${codexHome}", &self.codex_home.to_string_lossy())
             .replace("${appSupport}", &self.app_support.to_string_lossy())
             .replace("${localAppData}", &self.local_app_data.to_string_lossy());
@@ -114,23 +122,50 @@ impl Paths {
 
     /// Environment passed to client CLIs so they operate on the same
     /// directories this process resolved (keeps tests hermetic).
+    /// `CLAUDE_CONFIG_DIR` goes along only when it was set: passing the
+    /// default `~/.claude` would move Claude Code's `.claude.json` into it.
     pub fn cli_env(&self) -> Vec<(String, String)> {
-        vec![
-            (
+        let mut env = vec![(
+            "CODEX_HOME".into(),
+            self.codex_home.to_string_lossy().into_owned(),
+        )];
+        if self.claude_json.parent() == Some(self.claude_config_dir.as_path()) {
+            env.push((
                 "CLAUDE_CONFIG_DIR".into(),
                 self.claude_config_dir.to_string_lossy().into_owned(),
-            ),
-            (
-                "CODEX_HOME".into(),
-                self.codex_home.to_string_lossy().into_owned(),
-            ),
-        ]
+            ));
+        }
+        env
+    }
+
+    /// Where older CrewKit had Claude Code keep user-scope MCP servers
+    /// when `CLAUDE_CONFIG_DIR` was not set; `None` when that is the live
+    /// config.
+    pub fn legacy_claude_json(&self) -> Option<PathBuf> {
+        let legacy = self.claude_config_dir.join(".claude.json");
+        (legacy != self.claude_json).then_some(legacy)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_config_dir_is_passed_only_when_it_holds_claude_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = Paths::rooted(tmp.path());
+        let has_env = |p: &Paths| p.cli_env().iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR");
+        assert!(has_env(&paths));
+        assert_eq!(paths.legacy_claude_json(), None);
+
+        paths.claude_json = paths.home.join(".claude.json");
+        assert!(!has_env(&paths));
+        assert_eq!(
+            paths.legacy_claude_json(),
+            Some(paths.claude_config_dir.join(".claude.json"))
+        );
+    }
 
     #[test]
     fn desktop_config_prefers_store_localcache_when_present() {

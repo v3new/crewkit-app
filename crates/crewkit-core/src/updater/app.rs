@@ -22,6 +22,9 @@ pub const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6ID
 
 const DOWNLOAD_CAP: u64 = 200 * 1024 * 1024;
 
+/// Off: the app updates only when the user asks from the tray.
+pub const AUTO_UPDATE: bool = false;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Release {
     pub version: String,

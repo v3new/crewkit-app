@@ -26,7 +26,7 @@
   },
   "files": {
     "settings": "${claudeConfigDir}/settings.json",
-    "userConfig": "${claudeConfigDir}/.claude.json",
+    "userConfig": "${claudeJson}",
     "installedPlugins": "${claudeConfigDir}/plugins/installed_plugins.json"
   },
   "restartRequired": false,

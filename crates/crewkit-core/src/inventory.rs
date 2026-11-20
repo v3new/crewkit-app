@@ -393,7 +393,7 @@ fn survey(
     }
 
     // --- Claude Code MCP servers: user scope in .claude.json ---
-    let claude_json_path = paths.claude_config_dir.join(".claude.json");
+    let claude_json_path = paths.claude_json.clone();
     let claude_user_config = fsops::read_json(&claude_json_path)?;
     let claude_servers = claude_user_config
         .as_ref()

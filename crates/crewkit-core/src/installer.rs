@@ -466,7 +466,7 @@ impl Engine {
                 // MCP entries point at crewkit-bridge (stdio); entries from
                 // older CrewKit versions (remote HTTP shape) are migrated and
                 // user-added entries for the same server are adopted.
-                let claude_json = self.paths.claude_config_dir.join(".claude.json");
+                let claude_json = self.paths.claude_json.clone();
                 let user_servers = fsops::read_json(&claude_json)
                     .unwrap_or_default()
                     .and_then(|config| config.get("mcpServers").cloned());
@@ -1292,7 +1292,12 @@ impl Engine {
                 Status::InstalledForeign => {
                     emit(skip_foreign("Remove MCP server", "claude-code", &server.id))
                 }
-                _ => emit(skipped(&step, "claude-code", "not installed")),
+                _ => {
+                    state
+                        .mcp_servers
+                        .remove(&ManagedState::key("claude-code", &server.id));
+                    emit(skipped(&step, "claude-code", "not installed"))
+                }
             }
         }
 

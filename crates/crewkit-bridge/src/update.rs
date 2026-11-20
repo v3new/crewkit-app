@@ -58,10 +58,12 @@ pub fn run(paths: &Paths) -> Result<(), String> {
             kit.error.map(|e| format!(" — {e}")).unwrap_or_default()
         ));
     }
-    match updater::update_app(&crewkit_dir) {
-        Ok(Some(version)) => line(format!("app updated to {version}")),
-        Ok(None) => {}
-        Err(e) => line(format!("app update: {e}")),
+    if updater::AUTO_APP_UPDATE {
+        match updater::update_app(&crewkit_dir) {
+            Ok(Some(version)) => line(format!("app updated to {version}")),
+            Ok(None) => {}
+            Err(e) => line(format!("app update: {e}")),
+        }
     }
     Ok(())
 }
